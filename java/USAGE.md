@@ -31,7 +31,7 @@ The CMakeLists.txt auto-detects `g++-15`, `g++-14`, or `g++-13` from `/opt/homeb
 |---|---|---|
 | `-DBUILD_SHARED_LIBS=ON` | OFF | **Required** — builds `.so`/`.dylib` instead of `.a` |
 | `-DUSE_HEXL=ON` | ON (Linux), OFF (macOS) | Intel HEXL acceleration (x86 only) |
-| `-DNOAVX512=ON` | OFF | Disable AVX-512 instructions |
+| `-DNOAVX512=OFF` | ON | Disable AVX-512 (default ON; pre–Ice Lake CPUs SIGILL on AVX-512. Pass `=OFF` on Xeon Scalable / Ice Lake+ to opt in) |
 | `-DNOAVX2=ON` | OFF | Disable AVX2 instructions |
 
 ## Java Dependency

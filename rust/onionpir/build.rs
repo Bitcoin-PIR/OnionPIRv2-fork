@@ -6,6 +6,35 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo_root = manifest_dir.join("../..").canonicalize().unwrap();
 
+    // --- Step 0: Ensure the SEAL submodule is checked out ---
+    // Fresh `git clone` (without --recurse-submodules) leaves extern/SEAL
+    // empty; CMake then fails at add_subdirectory(extern/SEAL) with
+    // "does not contain a CMakeLists.txt file". Cargo consumers don't
+    // typically know to pass --recurse-submodules, so we self-heal here.
+    // Idempotent: skip the git call entirely once the submodule has a
+    // populated tree (cheap stat instead of forking git on every build).
+    let seal_cmakelists = repo_root.join("extern/SEAL/CMakeLists.txt");
+    if !seal_cmakelists.exists() {
+        eprintln!(
+            "onionpir build.rs: extern/SEAL is empty; running `git submodule update --init --recursive`"
+        );
+        let status = Command::new("git")
+            .current_dir(&repo_root)
+            .args(["submodule", "update", "--init", "--recursive"])
+            .status()
+            .expect("Failed to spawn git for submodule init (is git on PATH?)");
+        assert!(
+            status.success(),
+            "git submodule update failed; clone the repo with --recurse-submodules \
+             or initialize manually: git submodule update --init --recursive"
+        );
+        assert!(
+            seal_cmakelists.exists(),
+            "extern/SEAL/CMakeLists.txt still missing after submodule init at {}",
+            repo_root.display()
+        );
+    }
+
     // The `cmake` crate injects Clang-specific flags (--target=arm64-apple-macosx)
     // that GCC doesn't understand. Instead, drive CMake directly via Command.
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());

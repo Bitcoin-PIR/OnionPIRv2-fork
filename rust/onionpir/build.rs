@@ -20,6 +20,15 @@ fn main() {
     };
 
     // --- Step 2: CMake configure ---
+    // Intel HEXL is x86_64-only (AVX2 / AVX-512-IFMA paths). Enable it on
+    // x86_64 Linux/Windows; leave it off on Apple Silicon and any other
+    // non-x86 target. SEAL's runtime CPU dispatch handles AVX2-only vs
+    // AVX-512-IFMA hosts at runtime, so a single binary is portable.
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let use_hexl = target_arch == "x86_64" && (target_os == "linux" || target_os == "windows");
+    let hexl_flag = if use_hexl { "-DUSE_HEXL=ON" } else { "-DUSE_HEXL=OFF" };
+
     // Clear environment variables that Cargo sets which inject Clang-specific
     // flags (--target=arm64-apple-macosx) that GCC doesn't understand.
     let configure_status = Command::new("cmake")
@@ -33,7 +42,7 @@ fn main() {
         .env_remove("HOST")
         .arg(&repo_root)
         .args(["-DCMAKE_BUILD_TYPE=Benchmark"])
-        .args(["-DUSE_HEXL=OFF"])
+        .args([hexl_flag])
         .arg(format!("-DCMAKE_C_COMPILER={}", gcc))
         .arg(format!("-DCMAKE_CXX_COMPILER={}", gxx))
         .arg(format!("-DCMAKE_INSTALL_PREFIX={}", out_dir.display()))

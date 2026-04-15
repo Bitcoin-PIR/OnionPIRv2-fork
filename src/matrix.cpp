@@ -431,49 +431,8 @@ void component_wise_mult_direct_mod(matrix_t *A, matrix_t *B, uint64_t *out, con
 
 
 // ======================== THIRD PARTIES ========================
-
-
-// ======================== CRAZY AVX STUFF ========================
-
-#if defined(__AVX512F__)
-void avx_mat_mat_mult_128(const uint64_t *__restrict A,
-                          const uint64_t *__restrict B,
-                          uint128_t *__restrict out, const size_t rows,
-                          const size_t cols) {
-    // Ensure that cols is a multiple of 8.
-    
-    for (size_t i = 0; i < rows; i++) {
-        uint128_t acc0 = 0;  // Accumulator for first output column.
-        uint128_t acc1 = 0;  // Accumulator for second output column.
-        
-        for (size_t k = 0; k < cols; k += 8) {
-            // Load 8 consecutive 64-bit elements from row i of A.
-            const uint64_t* a_ptr = A + i * cols + k;
-            __m512i vecA = _mm512_loadu_si512((const __m512i*)a_ptr);
-            
-            // For B, assume first 'cols' elements form column 0 and the next 'cols' form column 1.
-            // Load 8 elements for column 0.
-            const uint64_t* b0_ptr = B + k;
-            __m512i vecB0 = _mm512_loadu_si512((const __m512i*)b0_ptr);
-            // Load 8 elements for column 1.
-            const uint64_t* b1_ptr = B + cols + k;
-            __m512i vecB1 = _mm512_loadu_si512((const __m512i*)b1_ptr);
-            
-            // Compute element-wise 128-bit products for the two columns.
-            __m512i lo0, hi0, lo1, hi1;
-            mul_64x64_128(vecA, vecB0, &lo0, &hi0);
-            mul_64x64_128(vecA, vecB1, &lo1, &hi1);
-            
-            // Horizontally reduce the 8 lane products to a scalar 128-bit sum.
-            uint128_t block_sum0 = horizontal_reduce_128(lo0, hi0);
-            uint128_t block_sum1 = horizontal_reduce_128(lo1, hi1);
-            
-            acc0 += block_sum0;
-            acc1 += block_sum1;
-        }
-        // Store the two 128-bit dot products for row i.
-        out[i*2]     = acc0;
-        out[i*2 + 1] = acc1;
-    }
-}
-#endif
+//
+// avx_mat_mat_mult_128 was deleted (see matrix.h note). It was AVX-512-only
+// with no AVX2 fallback, never invoked from the server dispatch, and only
+// reached from a benchmark. SIMD acceleration on x86_64 now flows through
+// HEXL via component_wise_mult_direct_mod.

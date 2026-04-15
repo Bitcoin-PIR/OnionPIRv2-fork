@@ -48,27 +48,27 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
 endif()
 
 
-# Option to enable Intel HEXL optimizations. Default OFF on Apple Silicon.
-if (APPLE)
-    option(USE_HEXL "Enable Intel HEXL optimizations" OFF)
+# Option to enable Intel HEXL acceleration. HEXL is x86_64-only (AVX2 +
+# AVX-512-IFMA paths with runtime CPU dispatch). Defaults to ON on x86_64
+# Linux/Windows; OFF on Apple Silicon and other non-x86 targets.
+# When enabled, HEXL is fetched and built by SEAL's own FetchContent
+# (extern/SEAL/cmake/ExternalIntelHEXL.cmake pins v1.2.5 = f95acf1),
+# exposing the HEXL::hexl target we link against below.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT APPLE)
+    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" ON)
 else()
-    option(USE_HEXL "Enable Intel HEXL optimizations" ON)
+    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" OFF)
+endif()
+
+if (USE_HEXL AND NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
+    message(WARNING "USE_HEXL=ON requested on ${CMAKE_SYSTEM_PROCESSOR}; "
+                    "HEXL is x86_64-only. Disabling.")
+    set(USE_HEXL OFF)
 endif()
 
 if (USE_HEXL)
-    message(STATUS "HEXL support enabled.")
+    message(STATUS "HEXL support enabled (fetched + built via SEAL).")
     add_compile_definitions(ONIONPIR_USE_HEXL)
-
-    # Set HEXL installation path
-    set(HEXL_DIR "/u/yuec12/OnionPIRv2/hexl_install/lib64/cmake/hexl-1.2.6")
-
-    # Find HEXL package
-    find_package(HEXL REQUIRED)
-    if(HEXL_FOUND)
-        message(STATUS "HEXL found at: ${HEXL_DIR}")
-    else()
-        message(FATAL_ERROR "HEXL not found. Please install HEXL or disable USE_HEXL option.")
-    endif()
 else()
     message(STATUS "HEXL support disabled.")
 endif()
@@ -98,7 +98,14 @@ find_package(OpenMP REQUIRED)
 
 # ==================== SEAL (submodule) ====================
 # Build SEAL from extern/SEAL submodule instead of requiring a system install.
-set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
+# Couple SEAL's HEXL integration to our USE_HEXL option. When ON, SEAL
+# fetches HEXL via FetchContent and exposes HEXL::hexl. When OFF, SEAL's
+# scalar fallback path is used (required on Apple Silicon / aarch64).
+if (USE_HEXL)
+    set(SEAL_USE_INTEL_HEXL ON  CACHE BOOL "" FORCE)
+else()
+    set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
+endif()
 set(SEAL_USE_MSGSL      OFF CACHE BOOL "" FORCE)
 set(SEAL_USE_ZLIB       OFF CACHE BOOL "" FORCE)
 set(SEAL_USE_ZSTD       OFF CACHE BOOL "" FORCE)
@@ -123,7 +130,8 @@ file(GLOB LIB_SRC_FILES
 add_library(onionpir ${LIB_SRC_FILES})
 target_include_directories(onionpir PUBLIC src/includes)
 target_link_libraries(onionpir PUBLIC SEAL::seal OpenMP::OpenMP_CXX)
-if (USE_HEXL AND HEXL_FOUND)
+if (USE_HEXL)
+    # HEXL::hexl was fetched + built by SEAL above (SEAL_USE_INTEL_HEXL=ON).
     target_link_libraries(onionpir PUBLIC HEXL::hexl)
 endif()
 

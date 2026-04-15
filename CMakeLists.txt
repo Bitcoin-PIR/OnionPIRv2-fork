@@ -48,17 +48,6 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
 endif()
 
 
-option(NOAVX512 "Disable AVX-512" ON)
-option(NOAVX2 "Disable AVX2" OFF)
-if (NOAVX512)
-    message("Disabling AVX-512")
-    add_compile_options(-mno-avx512f)
-endif()
-if (NOAVX2)
-    message("Disabling AVX2")
-    add_compile_options(-mno-avx2)
-endif()
-
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 set(IS_BENCHMARK_BUILD CMAKE_BUILD_TYPE STREQUAL "Benchmark")
 if (${IS_BENCHMARK_BUILD})
@@ -66,6 +55,36 @@ if (${IS_BENCHMARK_BUILD})
 endif ()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(Onion-PIR)
+
+# AVX-512 / AVX-2 disable switches. -mno-avx512f / -mno-avx2 are x86-only
+# flags; gcc/clang on aarch64 hard-error on them. Both must be gated on
+# CMAKE_SYSTEM_PROCESSOR, which is only populated by project() — that's
+# why this block lives below project() rather than above.
+#
+# NOAVX512 defaults ON: SEAL's check_cxx_compiler_flag(-mavx512ifma) only
+# tests compiler acceptance, not CPU support. gcc 13+ always accepts the
+# flag, so SEAL's blake2b auto-vectorizes into vmovdqu64 / zmm registers
+# and SIGILLs on AVX2-only CPUs (e.g. Coffee Lake i7-8700) the moment
+# any keygen runs. Operators on known AVX-512-IFMA hosts can opt back in
+# with -DNOAVX512=OFF. HEXL's runtime CPU dispatch still provides the
+# AVX-512-IFMA acceleration on capable hardware via its own paths.
+option(NOAVX512 "Disable AVX-512" ON)
+option(NOAVX2 "Disable AVX2" OFF)
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86)$")
+    if (NOAVX512)
+        message(STATUS "Disabling AVX-512 (-mno-avx512f)")
+        add_compile_options(-mno-avx512f)
+    endif()
+    if (NOAVX2)
+        message(STATUS "Disabling AVX2 (-mno-avx2)")
+        add_compile_options(-mno-avx2)
+    endif()
+else()
+    if (NOAVX512 OR NOAVX2)
+        message(STATUS "NOAVX512/NOAVX2 ignored on non-x86 target "
+                       "(${CMAKE_SYSTEM_PROCESSOR}); these flags are x86-only.")
+    endif()
+endif()
 
 # Option to enable Intel HEXL acceleration. HEXL is x86_64-only (AVX2 +
 # AVX-512-IFMA paths with runtime CPU dispatch). Defaults to ON on x86_64
@@ -109,6 +128,17 @@ if (USE_HEXL)
     set(SEAL_USE_INTEL_HEXL ON  CACHE BOOL "" FORCE)
 else()
     set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
+endif()
+
+# SEAL has its own NOAVX512 / NOAVX2 options that, when ON, add
+# -mno-avx512f / -mno-avx2 to its compile options. Those flags are
+# x86-only — gcc/clang on aarch64 hard-error on them. Force both OFF
+# in the cache before add_subdirectory(extern/SEAL) on non-x86 hosts so
+# SEAL's own block skips the flag injection. (On x86 the user-level
+# defaults from the block above stay in effect.)
+if (NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86)$"))
+    set(NOAVX512 OFF CACHE BOOL "" FORCE)
+    set(NOAVX2   OFF CACHE BOOL "" FORCE)
 endif()
 set(SEAL_USE_MSGSL      OFF CACHE BOOL "" FORCE)
 set(SEAL_USE_ZLIB       OFF CACHE BOOL "" FORCE)

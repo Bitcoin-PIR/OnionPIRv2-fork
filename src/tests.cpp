@@ -588,15 +588,6 @@ void PirTest::test_single_mat_mult() {
   TIME_END(LV_MAT_MAT_128);
 
 
-  // ============= avx mat mat mult 128 bits ==============
-#if defined(__AVX512F__)
-  const std::string AVX_MAT_MULT_128 = "AVX mat-mat-128";
-  TIME_START(AVX_MAT_MULT_128);
-  avx_mat_mat_mult_128(A_data.data(), B_data.data(), C_data128.data(), rows, cols);
-  TIME_END(AVX_MAT_MULT_128);
-#endif
-
-
   // ============= Print the results to avoid over optimization ==============
   for (size_t i = 0; i < rows * b_cols; i++) { sum += C_data[i]; }
   BENCH_PRINT("Sum: " << sum);
@@ -615,9 +606,6 @@ void PirTest::test_single_mat_mult() {
   print_throughput(RAW_MAT_MAT_128, db_size);
   print_throughput(LV_MAT_MAT_64, db_size);
   print_throughput(LV_MAT_MAT_128, db_size);
-#if defined(__AVX512F__)
-  print_throughput(AVX_MAT_MULT_128, db_size);
-#endif
 
 }
 

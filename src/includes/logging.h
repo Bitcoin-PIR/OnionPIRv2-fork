@@ -16,6 +16,19 @@
 #define DEBUG_PRINT(s) ; // do nothing
 #endif
 
+// Default to no-op when neither _DEBUG nor _BENCHMARK is defined.
+// Without this fallback, plain CMAKE_BUILD_TYPE=Release builds fail to
+// compile since the library calls DEBUG_PRINT unconditionally (e.g.
+// server.cpp's mod-switch path). Release is the build type used by the
+// Rust FFI consumer (HEXL rejects the custom "Benchmark" build type).
+//
+// Match the _BENCHMARK convention: the macro carries its own trailing
+// semicolon. Call sites in this codebase appear both with and without
+// a trailing `;`, so the macro must expand to a complete statement.
+#ifndef DEBUG_PRINT
+#define DEBUG_PRINT(s) ;
+#endif
+
 #define BENCH_PRINT(s) std::cout << s << std::endl;
 #define PRINT_BAR                                                              \
   BENCH_PRINT("==============================================================" \

@@ -70,7 +70,13 @@ fn main() {
         .env_remove("TARGET")
         .env_remove("HOST")
         .arg(&repo_root)
-        .args(["-DCMAKE_BUILD_TYPE=Benchmark"])
+        // Use Release (not the project's custom "Benchmark" type): when
+        // USE_HEXL=ON, SEAL forwards CMAKE_BUILD_TYPE to HEXL via
+        // FetchContent, and HEXL only accepts Debug/Release/RelWithDebInfo/
+        // MinSizeRel — "Benchmark" hard-errors. The library is fine in
+        // Release; logging.h has a no-op DEBUG_PRINT fallback for builds
+        // that don't define _DEBUG or _BENCHMARK.
+        .args(["-DCMAKE_BUILD_TYPE=Release"])
         .args([hexl_flag])
         .arg(format!("-DCMAKE_C_COMPILER={}", gcc))
         .arg(format!("-DCMAKE_CXX_COMPILER={}", gxx))

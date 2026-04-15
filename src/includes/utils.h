@@ -22,6 +22,14 @@
 #define PRINT_INT_ARRAY(arr_name, arr, size) ;  // do nothing
 #endif
 
+// Default to no-op when neither _DEBUG nor _BENCHMARK is defined
+// (e.g. plain CMAKE_BUILD_TYPE=Release). Same rationale as the
+// DEBUG_PRINT fallback in logging.h: the library calls this macro
+// from compiled-in paths (client.cpp:71 / 143).
+#ifndef PRINT_INT_ARRAY
+#define PRINT_INT_ARRAY(arr_name, arr, size) ;
+#endif
+
 
 
 inline void print_func_name(std::string func_name) {

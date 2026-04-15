@@ -48,32 +48,6 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
 endif()
 
 
-# Option to enable Intel HEXL acceleration. HEXL is x86_64-only (AVX2 +
-# AVX-512-IFMA paths with runtime CPU dispatch). Defaults to ON on x86_64
-# Linux/Windows; OFF on Apple Silicon and other non-x86 targets.
-# When enabled, HEXL is fetched and built by SEAL's own FetchContent
-# (extern/SEAL/cmake/ExternalIntelHEXL.cmake pins v1.2.5 = f95acf1),
-# exposing the HEXL::hexl target we link against below.
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT APPLE)
-    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" ON)
-else()
-    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" OFF)
-endif()
-
-if (USE_HEXL AND NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
-    message(WARNING "USE_HEXL=ON requested on ${CMAKE_SYSTEM_PROCESSOR}; "
-                    "HEXL is x86_64-only. Disabling.")
-    set(USE_HEXL OFF)
-endif()
-
-if (USE_HEXL)
-    message(STATUS "HEXL support enabled (fetched + built via SEAL).")
-    add_compile_definitions(ONIONPIR_USE_HEXL)
-else()
-    message(STATUS "HEXL support disabled.")
-endif()
-
-
 option(NOAVX512 "Disable AVX-512" OFF)
 option(NOAVX2 "Disable AVX2" OFF)
 if (NOAVX512)
@@ -92,6 +66,36 @@ if (${IS_BENCHMARK_BUILD})
 endif ()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(Onion-PIR)
+
+# Option to enable Intel HEXL acceleration. HEXL is x86_64-only (AVX2 +
+# AVX-512-IFMA paths with runtime CPU dispatch). Defaults to ON on x86_64
+# Linux/Windows; OFF on Apple Silicon and other non-x86 targets.
+# When enabled, HEXL is fetched and built by SEAL's own FetchContent
+# (extern/SEAL/cmake/ExternalIntelHEXL.cmake pins v1.2.5 = f95acf1),
+# exposing the HEXL::hexl target we link against below.
+#
+# NOTE: this block MUST come after project(). CMAKE_SYSTEM_PROCESSOR is
+# only populated by project(); reading it earlier yields an empty string,
+# which makes the arch regex fail and silently disables HEXL even when
+# the caller passed -DUSE_HEXL=ON.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT APPLE)
+    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" ON)
+else()
+    option(USE_HEXL "Enable Intel HEXL acceleration (x86_64 only)" OFF)
+endif()
+
+if (USE_HEXL AND NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
+    message(WARNING "USE_HEXL=ON requested on ${CMAKE_SYSTEM_PROCESSOR}; "
+                    "HEXL is x86_64-only. Disabling.")
+    set(USE_HEXL OFF)
+endif()
+
+if (USE_HEXL)
+    message(STATUS "HEXL support enabled (fetched + built via SEAL).")
+    add_compile_definitions(ONIONPIR_USE_HEXL)
+else()
+    message(STATUS "HEXL support disabled.")
+endif()
 
 # ==================== OpenMP ====================
 find_package(OpenMP REQUIRED)

@@ -48,7 +48,7 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
 endif()
 
 
-option(NOAVX512 "Disable AVX-512" OFF)
+option(NOAVX512 "Disable AVX-512" ON)
 option(NOAVX2 "Disable AVX2" OFF)
 if (NOAVX512)
     message("Disabling AVX-512")

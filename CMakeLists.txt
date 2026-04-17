@@ -130,6 +130,53 @@ else()
     set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
 endif()
 
+# Extend NOAVX512 policy to HEXL itself. HEXL's probe
+# (hexl's own cmake/hexl/hexl-util.cmake::hexl_check_compile_flag, fetched
+# at configure time by SEAL's extern/SEAL/cmake/ExternalIntelHEXL.cmake)
+# uses try_run() with COMPILE_DEFINITIONS=-march=native, which bypasses the
+# -mno-avx512f we injected via add_compile_options above (add_compile_options
+# does not propagate into try_compile/try_run). On AVX-512-capable build
+# hosts (e.g. GitHub Actions ubuntu-22.04 on Azure westcentralus) the probes
+# therefore succeed and HEXL's root CMakeLists.txt then:
+#   1. calls add_definitions(-DHEXL_HAS_AVX512{DQ,IFMA,VBMI2}), enabling the
+#      #ifdef HEXL_HAS_AVX512* guards inside HEXL sources, and
+#   2. appends eltwise-*-avx512*.cpp / fwd-ntt-avx512.cpp / inv-ntt-avx512.cpp
+#      to its build sources.
+# Those TUs then fail to compile under the parent project's inherited
+# -mno-avx512f with "inlining failed in call to always_inline '_mm512_*':
+# target specific option mismatch", as seen in
+#   https://github.com/Bitcoin-PIR/Bitcoin-PIR/actions/runs/24554690767
+#
+# Cache-variable overrides (set(HEXL_HAS_AVX512DQ OFF CACHE BOOL "" FORCE))
+# do not help: hexl_check_compile_flag runs unconditionally and writes via
+# add_definitions(), which is independent of the CMake variable's value.
+#
+# Fix: supersede SEAL's internal FetchContent_Declare(hexl ...) by declaring
+# hexl FIRST ourselves, with a PATCH_COMMAND that drops the three AVX-512
+# probe call sites from HEXL's root CMakeLists.txt. FetchContent_Declare
+# uses first-declared-wins semantics, so SEAL's subsequent declaration of
+# the same content name is a no-op. HEXL's AVX2 probe (test-avx256.cpp,
+# HEXL_HAS_AVX256) is preserved — HEXL-without-AVX-512 is still faster than
+# SEAL's scalar fallback.
+#
+# Linux-only (sed + POSIX tools). USE_HEXL is x86_64 Linux/Windows, but
+# we gate this patch step on UNIX so Windows consumers remain unaffected;
+# on Windows this block is skipped, HEXL's probes still fire, and the
+# MSVC build path is untouched. The primary regression this fixes is
+# Linux CI, which is the only currently-exercised HEXL target.
+if (USE_HEXL AND NOAVX512 AND UNIX)
+    include(FetchContent)
+    FetchContent_Declare(
+        hexl
+        PREFIX hexl
+        GIT_REPOSITORY https://github.com/intel/hexl
+        GIT_TAG        f95acf1  # 1.2.5 — must match extern/SEAL/cmake/ExternalIntelHEXL.cmake
+        PATCH_COMMAND  sed -i.bak
+                       "/hexl_check_compile_flag.*test-avx512/d"
+                       CMakeLists.txt
+    )
+endif()
+
 # SEAL has its own NOAVX512 / NOAVX2 options that, when ON, add
 # -mno-avx512f / -mno-avx2 to its compile options. Those flags are
 # x86-only — gcc/clang on aarch64 hard-error on them. Force both OFF

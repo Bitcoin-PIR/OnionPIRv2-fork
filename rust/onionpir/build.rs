@@ -77,6 +77,15 @@ fn main() {
         // Release; logging.h has a no-op DEBUG_PRINT fallback for builds
         // that don't define _DEBUG or _BENCHMARK.
         .args(["-DCMAKE_BUILD_TYPE=Release"])
+        // CMake 4.x removed compatibility with cmake_minimum_required(VERSION)
+        // below 3.5, but HEXL's transitive cpu-features submodule still
+        // declares VERSION 2.x. -DCMAKE_POLICY_VERSION_MINIMUM=3.5 makes
+        // CMake apply 3.5 policies as a floor, satisfying both the new
+        // strictness and the old declarations. Harmless on CMake 3.x where
+        // it's accepted but unused. Without this, fresh builds on Ubuntu
+        // 26.04 / Arch / recent Fedora (any host with cmake>=4) fail at
+        // hexl-build/cmake/third-party/cpu-features/CMakeLists.txt:1.
+        .args(["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"])
         .args([hexl_flag])
         .arg(format!("-DCMAKE_C_COMPILER={}", gcc))
         .arg(format!("-DCMAKE_CXX_COMPILER={}", gxx))

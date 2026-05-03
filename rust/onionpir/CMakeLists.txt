@@ -20,8 +20,25 @@ if (APPLE)
         message(WARNING "Homebrew GCC not found, falling back to default compiler. OpenMP may not work.")
     endif()
 else()
-    set(CMAKE_C_COMPILER  /usr/bin/gcc)
-    set(CMAKE_CXX_COMPILER /usr/bin/g++)
+    # Linux: don't hardcode /usr/bin/{gcc,g++} — that breaks hermetic
+    # builds (Nix sandbox, distroless containers) where /usr/bin/ either
+    # doesn't exist or contains a compiler that links against impure
+    # paths. If the consumer set CMAKE_C_COMPILER / CMAKE_CXX_COMPILER
+    # already (e.g. via -DCMAKE_C_COMPILER=... from build.rs or `cmake
+    # -D...`), respect that. Otherwise fall back to PATH lookup, then
+    # /usr/bin as a last resort.
+    if (NOT CMAKE_C_COMPILER)
+        find_program(GCC_CC  NAMES gcc PATHS /usr/bin)
+        if (GCC_CC)
+            set(CMAKE_C_COMPILER ${GCC_CC})
+        endif()
+    endif()
+    if (NOT CMAKE_CXX_COMPILER)
+        find_program(GCC_CXX NAMES g++ PATHS /usr/bin)
+        if (GCC_CXX)
+            set(CMAKE_CXX_COMPILER ${GCC_CXX})
+        endif()
+    endif()
 endif()
 
 # Ask every target in this project to compile as C++20

@@ -37,7 +37,7 @@ if(EMSCRIPTEN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
 endif()
 
-add_subdirectory(../extern/SEAL seal_build)
+add_subdirectory(../rust/onionpir/extern/SEAL seal_build)
 
 # ==================== Client-only WASM module ====================
 # Define _BENCHMARK to enable the no-op debug macros in logging.h / utils.h

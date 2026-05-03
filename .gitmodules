@@ -1,3 +1,0 @@
-[submodule "extern/SEAL"]
-	path = extern/SEAL
-	url = https://github.com/Bitcoin-PIR/SEAL-For-OnionPIR-fork.git

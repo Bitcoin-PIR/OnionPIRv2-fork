@@ -4,7 +4,13 @@ use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let repo_root = manifest_dir.join("../..").canonicalize().unwrap();
+    // The crate is now self-contained: CMakeLists.txt + cpp/ + extern/SEAL
+    // all live inside the crate dir. cargo vendor brings them along
+    // automatically. The previous layout used manifest_dir.join("../..")
+    // which assumed the surrounding OnionPIRv2-fork repo layout, breaking
+    // any vendored consumer (cargo vendor flattens git deps to just the
+    // consumed subcrate).
+    let repo_root = manifest_dir.canonicalize().unwrap();
 
     // --- Step 0: Ensure the SEAL submodule is checked out ---
     // Fresh `git clone` (without --recurse-submodules) leaves extern/SEAL
@@ -13,6 +19,11 @@ fn main() {
     // typically know to pass --recurse-submodules, so we self-heal here.
     // Idempotent: skip the git call entirely once the submodule has a
     // populated tree (cheap stat instead of forking git on every build).
+    //
+    // Note: from a cargo-vendored consumer (where there's no .git dir),
+    // `git submodule update` will fail; the consumer must pre-populate
+    // extern/SEAL via their own fetch (e.g. Nix's fetchFromGitHub, then
+    // copy in postPatch). The assert below catches this case clearly.
     let seal_cmakelists = repo_root.join("extern/SEAL/CMakeLists.txt");
     if !seal_cmakelists.exists() {
         eprintln!(

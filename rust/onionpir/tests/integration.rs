@@ -1,4 +1,9 @@
 //! End-to-end PIR round-trip via the Rust crate.
+//!
+//! Run with `--test-threads=1` (or via `cargo test -- --test-threads=1`). The
+//! native engine keeps unsynchronized static state (NTT object cache, timer
+//! logger), so two tests running in parallel can hit a SIGTRAP. Serial
+//! execution is the only correct way to run this suite.
 
 use onionpir::{params_info, Client, Server};
 
@@ -39,4 +44,62 @@ fn pir_roundtrip() {
         }
     }
     assert_eq!(failures, 0, "{} of {} queries failed", failures, targets.len());
+}
+
+/// Build a server, query for the golden plaintext, persist its DB, then
+/// reconstruct fresh servers from the file (and from a borrowed buffer) and
+/// verify the PIR response matches the golden plaintext on both paths.
+#[test]
+fn db_save_load_roundtrip() {
+    let pt_idx: u64 = 99;
+    let tmp_path = std::env::temp_dir().join(format!("onionpir-test-db-{}.bin", std::process::id()));
+    let tmp = tmp_path.to_str().unwrap();
+    let _ = std::fs::remove_file(&tmp_path);
+
+    // Step 1: generate a DB, query for pt_idx, save the DB. The result is the
+    // golden plaintext: every other load path must reproduce it.
+    let golden = {
+        let mut s = Server::new(0);
+        s.gen_data(&[pt_idx]);
+        let c = Client::new(0);
+        s.set_galois_keys(c.id(), &c.galois_keys());
+        s.set_gsw_key(c.id(), &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = s.answer_query(c.id(), &q);
+        let pt = c.decrypt_response(&resp);
+        assert_eq!(pt, s.get_original_plaintext(pt_idx),
+                   "stage1: PIR result didn't match recorded plaintext");
+        assert!(s.save_db(tmp), "save_db failed");
+        pt
+    };
+
+    // Step 2: file-load path. NO gen_data — load_db is the only data source.
+    {
+        let mut s = Server::new(0);
+        assert!(s.load_db(tmp), "load_db failed");
+        let c = Client::new(0);
+        s.set_galois_keys(c.id(), &c.galois_keys());
+        s.set_gsw_key(c.id(), &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = s.answer_query(c.id(), &q);
+        assert_eq!(c.decrypt_response(&resp), golden, "file-load PIR != golden");
+    }
+
+    // Step 3: borrowed-buffer path. Read the file into a Rust Vec and alias
+    // it. `bytes` must outlive the server.
+    let bytes = std::fs::read(&tmp_path).expect("read saved DB");
+    {
+        let mut s = Server::new(0);
+        // SAFETY: `bytes` outlives `s` (both end at the closing brace).
+        assert!(unsafe { s.load_db_from_borrowed(&bytes) },
+                "load_db_from_borrowed failed");
+        let c = Client::new(0);
+        s.set_galois_keys(c.id(), &c.galois_keys());
+        s.set_gsw_key(c.id(), &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = s.answer_query(c.id(), &q);
+        assert_eq!(c.decrypt_response(&resp), golden, "borrowed-load PIR != golden");
+    }
+
+    let _ = std::fs::remove_file(&tmp_path);
 }

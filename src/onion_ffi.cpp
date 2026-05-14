@@ -418,6 +418,39 @@ extern "C" void onion_server_set_gsw_key(OnionServerHandle h, uint64_t client_id
     } catch (...) {}
 }
 
+extern "C" int onion_server_save_db(OnionServerHandle h, const char *path) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s || !path) return 0;
+    try {
+        s->inner.save_db_to_file(std::string(path));
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" int onion_server_load_db(OnionServerHandle h, const char *path) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s || !path) return 0;
+    try {
+        return s->inner.load_db_from_file(std::string(path)) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" int onion_server_load_db_from_borrowed(OnionServerHandle h,
+                                                   const uint8_t *data,
+                                                   size_t len) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s || !data) return 0;
+    try {
+        return s->inner.load_db_from_borrowed(data, len) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
 extern "C" OnionBuf onion_server_answer_query(OnionServerHandle h, uint64_t client_id,
                                               const uint8_t *query, size_t query_len) {
     auto *s = static_cast<OnionPirServer_t *>(h);

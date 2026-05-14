@@ -19,6 +19,21 @@ public:
    */
   void gen_data(const std::vector<size_t>& record_indices = {});
 
+  // ─── Preprocessed-database persistence ────────────────────────────────
+  // Save / load the post-NTT, realigned database produced by gen_data() (and,
+  // later, by push_chunk()). The on-disk format is:
+  //   [u64 magic][u64 num_pt][u64 coeff_val_cnt][u64 layout_id][u64 data_bytes]
+  //   [raw bytes of size data_bytes]
+  // layout_id encodes db_coeff_t width + composite-mod split (see server.cpp).
+  // Standard path stores db_aligned_; composite path stores db_lo_ || db_hi_.
+  void save_db_to_file(const std::string &path) const;
+  // Returns false if the file is missing or the header doesn't match the
+  // server's compile-time config; never throws for these.
+  bool load_db_from_file(const std::string &path);
+  // Zero-copy alias: caller-owned buffer must outlive the server. Buffer must
+  // start with the same header save_db_to_file produces.
+  bool load_db_from_borrowed(const uint8_t *data, size_t len);
+
   // Given the client id and a packed client query, this function first unpacks the query, then returns the retrieved encrypted result.
   RlweCt make_query(const size_t client_id, RlweCt &query);
   // return the number of bits needed to represent the server reponse
@@ -67,6 +82,14 @@ private:
   // which are CRT-composed in inter_to_cts_composite.
   std::unique_ptr<uint32_t[], AlignedDeleter<uint32_t>> db_lo_;
   std::unique_ptr<uint32_t[], AlignedDeleter<uint32_t>> db_hi_;
+
+  // Live read pointers for the matmul. Normally alias the unique_ptr buffers
+  // above (set in the ctor and reaffirmed after gen_data / load_db_from_file).
+  // load_db_from_borrowed retargets them at the caller's buffer; in that mode
+  // db_aligned_ / db_lo_ / db_hi_ are released to save the duplicate memory.
+  const db_coeff_t *db_ptr_ = nullptr;
+  const uint32_t   *db_lo_ptr_ = nullptr;
+  const uint32_t   *db_hi_ptr_ = nullptr;
   std::vector<uint64_t> inter_res_lo_;
   std::vector<uint64_t> inter_res_hi_;
   PirParams pir_params_;

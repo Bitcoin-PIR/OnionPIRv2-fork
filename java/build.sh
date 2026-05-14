@@ -47,10 +47,17 @@ javac -d build -cp "${JNA_JAR}" \
     com/onionpir/jna/OnionPir.java \
     com/onionpir/jna/OnionPirClient.java \
     com/onionpir/jna/OnionPirServer.java \
-    test/PirRoundTrip.java
+    test/PirRoundTrip.java \
+    test/DbSaveLoad.java
 
 echo
 echo "Running PirRoundTrip..."
 java -cp "build:${JNA_JAR}" \
     -Djna.library.path="${LIB_DIR}" \
     PirRoundTrip
+
+echo
+echo "Running DbSaveLoad..."
+java -cp "build:${JNA_JAR}" \
+    -Djna.library.path="${LIB_DIR}" \
+    DbSaveLoad

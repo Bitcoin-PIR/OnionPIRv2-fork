@@ -72,6 +72,32 @@ public final class OnionPirServer implements AutoCloseable {
         return OnionPir.bufToBytes(buf);
     }
 
+    /**
+     * Save the post-NTT, realigned database to {@code path}.
+     * @return {@code true} on success; {@code false} on I/O failure or empty DB.
+     */
+    public boolean saveDb(String path) {
+        return LIB.onion_server_save_db(handle, path) != 0;
+    }
+
+    /**
+     * Load a previously-saved DB. Returns {@code false} if the file is
+     * missing or the on-disk layout doesn't match the server's compile-time
+     * config.
+     */
+    public boolean loadDb(String path) {
+        return LIB.onion_server_load_db(handle, path) != 0;
+    }
+
+    /**
+     * Zero-copy: alias an already-formatted DB buffer. The buffer must
+     * outlive the server (the server keeps a reference, doesn't copy).
+     * Returns {@code false} on header / size mismatch.
+     */
+    public boolean loadDbFromBorrowed(byte[] data) {
+        return LIB.onion_server_load_db_from_borrowed(handle, data, data.length) != 0;
+    }
+
     @Override
     public void close() {
         if (handle != null) {

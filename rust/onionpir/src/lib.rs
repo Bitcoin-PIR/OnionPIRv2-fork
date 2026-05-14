@@ -84,6 +84,10 @@ extern "C" {
         query: *const u8,
         query_len: usize,
     ) -> COnionBuf;
+
+    fn onion_server_save_db(h: ServerHandle, path: *const i8) -> i32;
+    fn onion_server_load_db(h: ServerHandle, path: *const i8) -> i32;
+    fn onion_server_load_db_from_borrowed(h: ServerHandle, data: *const u8, len: usize) -> i32;
 }
 
 // ============================================================================
@@ -226,6 +230,30 @@ impl Server {
         buf_to_vec(unsafe {
             onion_server_answer_query(self.h, client_id, query.as_ptr(), query.len())
         })
+    }
+
+    /// Save the post-NTT, realigned database to `path`. Returns `false` on I/O
+    /// failure or if no DB has been populated yet.
+    pub fn save_db(&self, path: &str) -> bool {
+        let c = std::ffi::CString::new(path).expect("path contains NUL byte");
+        unsafe { onion_server_save_db(self.h, c.as_ptr()) != 0 }
+    }
+
+    /// Load a previously-saved DB. Returns `false` if the file is missing or
+    /// the on-disk layout doesn't match the server's compile-time config.
+    pub fn load_db(&mut self, path: &str) -> bool {
+        let c = std::ffi::CString::new(path).expect("path contains NUL byte");
+        unsafe { onion_server_load_db(self.h, c.as_ptr()) != 0 }
+    }
+
+    /// Zero-copy alias an already-formatted DB buffer. The buffer must outlive
+    /// the server. Returns `false` on header mismatch / size mismatch.
+    ///
+    /// # Safety
+    /// `data` must remain valid for the lifetime of the server. The server
+    /// reads (but does not write) it during every query.
+    pub unsafe fn load_db_from_borrowed(&mut self, data: &[u8]) -> bool {
+        onion_server_load_db_from_borrowed(self.h, data.as_ptr(), data.len()) != 0
     }
 }
 

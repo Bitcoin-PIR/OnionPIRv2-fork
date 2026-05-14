@@ -36,10 +36,13 @@ PirServer::PirServer(const PirParams &pir_params)
     // coeff-major layout. Bytes match the u64 DB on the standard path.
     db_lo_ = make_unique_aligned<uint32_t, 64>(db_elem_cnt);
     db_hi_ = make_unique_aligned<uint32_t, 64>(db_elem_cnt);
+    db_lo_ptr_ = db_lo_.get();
+    db_hi_ptr_ = db_hi_.get();
   } else {
     // after NTT, each database polynomial coefficient will be in mod q. Hence,
     // each pt coefficient is represented by K many uint64_t, same as the ciphertext.
     db_aligned_ = make_unique_aligned<db_coeff_t, 64>(db_elem_cnt);
+    db_ptr_ = db_aligned_.get();
   }
   fill_inter_res();
 }
@@ -142,6 +145,171 @@ void PirServer::gen_data(const std::vector<size_t>& record_indices) {
   }
   TIME_ONCE_END("DB gen+NTT+realign");
   PRINT_ONCE("DB gen+NTT+realign");
+}
+
+// ───────────────────────────── DB persistence ──────────────────────────────
+//
+// On-disk format (all little-endian, machine-native u64 layout):
+//   header: [magic][version][layout_id][num_pt][coeff_val_cnt][data_bytes]
+//   data:   raw bytes of size data_bytes
+//
+// layout_id bits:
+//   bit 0 — composite split (db_lo_ || db_hi_ as u32 arrays)
+//   bit 1 — db_coeff_t is uint32_t (vs uint64_t)
+//
+// load_db_from_borrowed treats `data` as the start of the header. Bytes after
+// the header are aliased in place; the caller must keep them alive.
+
+namespace {
+constexpr uint64_t PREPROC_MAGIC   = 0x4F50495256325F44ULL;  // "D_2VRIPO" LE
+constexpr uint64_t PREPROC_VERSION = 1;
+constexpr size_t   HEADER_U64S     = 6;
+constexpr size_t   HEADER_BYTES    = HEADER_U64S * sizeof(uint64_t);
+
+uint64_t compute_layout_id(bool composite, bool db_coeff_is_u32) {
+  uint64_t id = 0;
+  if (composite)        id |= 1ULL;
+  if (db_coeff_is_u32)  id |= 2ULL;
+  return id;
+}
+}  // namespace
+
+void PirServer::save_db_to_file(const std::string &path) const {
+  const bool composite = pir_params_.get_composite_rns().enabled;
+  const bool db_u32    = (sizeof(db_coeff_t) == 4);
+  const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t elem_cnt = num_pt_ * coeff_val_cnt;
+
+  const uint8_t *src       = nullptr;
+  size_t         data_bytes = 0;
+  if (composite) {
+    if (!db_lo_ptr_ || !db_hi_ptr_)
+      throw std::runtime_error("save_db_to_file: composite DB not loaded");
+    data_bytes = 2 * elem_cnt * sizeof(uint32_t);
+    // We write db_lo_ then db_hi_ — both contiguous u32 arrays.
+  } else {
+    if (!db_ptr_)
+      throw std::runtime_error("save_db_to_file: standard DB not loaded");
+    src        = reinterpret_cast<const uint8_t *>(db_ptr_);
+    data_bytes = elem_cnt * sizeof(db_coeff_t);
+  }
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) throw std::runtime_error("save_db_to_file: cannot open " + path);
+
+  uint64_t header[HEADER_U64S] = {
+      PREPROC_MAGIC, PREPROC_VERSION,
+      compute_layout_id(composite, db_u32),
+      static_cast<uint64_t>(num_pt_),
+      static_cast<uint64_t>(coeff_val_cnt),
+      static_cast<uint64_t>(data_bytes),
+  };
+  out.write(reinterpret_cast<const char *>(header), HEADER_BYTES);
+  if (composite) {
+    out.write(reinterpret_cast<const char *>(db_lo_ptr_),
+              elem_cnt * sizeof(uint32_t));
+    out.write(reinterpret_cast<const char *>(db_hi_ptr_),
+              elem_cnt * sizeof(uint32_t));
+  } else {
+    out.write(reinterpret_cast<const char *>(src), data_bytes);
+  }
+  if (!out) throw std::runtime_error("save_db_to_file: write failed");
+  out.close();
+
+  const double mb = (HEADER_BYTES + data_bytes) / (1024.0 * 1024.0);
+  BENCH_PRINT("Saved preprocessed DB to " << path << " (" << mb << " MB)");
+}
+
+// Shared header validation. Returns true on match; never throws.
+static bool validate_header(const uint64_t header[HEADER_U64S],
+                            size_t expected_num_pt,
+                            size_t expected_coeff_val_cnt,
+                            uint64_t expected_layout_id,
+                            size_t expected_data_bytes) {
+  return header[0] == PREPROC_MAGIC
+      && header[1] == PREPROC_VERSION
+      && header[2] == expected_layout_id
+      && header[3] == expected_num_pt
+      && header[4] == expected_coeff_val_cnt
+      && header[5] == expected_data_bytes;
+}
+
+bool PirServer::load_db_from_file(const std::string &path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+
+  uint64_t header[HEADER_U64S];
+  in.read(reinterpret_cast<char *>(header), HEADER_BYTES);
+  if (!in) return false;
+
+  const bool composite = pir_params_.get_composite_rns().enabled;
+  const bool db_u32    = (sizeof(db_coeff_t) == 4);
+  const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t elem_cnt = num_pt_ * coeff_val_cnt;
+  const size_t expected_bytes = composite
+      ? 2 * elem_cnt * sizeof(uint32_t)
+      : elem_cnt * sizeof(db_coeff_t);
+  const uint64_t expected_layout = compute_layout_id(composite, db_u32);
+
+  if (!validate_header(header, num_pt_, coeff_val_cnt,
+                       expected_layout, expected_bytes)) {
+    return false;
+  }
+
+  if (composite) {
+    in.read(reinterpret_cast<char *>(db_lo_.get()),
+            elem_cnt * sizeof(uint32_t));
+    in.read(reinterpret_cast<char *>(db_hi_.get()),
+            elem_cnt * sizeof(uint32_t));
+    if (!in) return false;
+    db_lo_ptr_ = db_lo_.get();
+    db_hi_ptr_ = db_hi_.get();
+  } else {
+    in.read(reinterpret_cast<char *>(db_aligned_.get()),
+            elem_cnt * sizeof(db_coeff_t));
+    if (!in) return false;
+    db_ptr_ = db_aligned_.get();
+  }
+
+  BENCH_PRINT("Loaded preprocessed DB from " << path);
+  return true;
+}
+
+bool PirServer::load_db_from_borrowed(const uint8_t *data, size_t len) {
+  if (!data || len < HEADER_BYTES) return false;
+  uint64_t header[HEADER_U64S];
+  std::memcpy(header, data, HEADER_BYTES);
+
+  const bool composite = pir_params_.get_composite_rns().enabled;
+  const bool db_u32    = (sizeof(db_coeff_t) == 4);
+  const size_t coeff_val_cnt = pir_params_.get_coeff_val_cnt();
+  const size_t elem_cnt = num_pt_ * coeff_val_cnt;
+  const size_t expected_bytes = composite
+      ? 2 * elem_cnt * sizeof(uint32_t)
+      : elem_cnt * sizeof(db_coeff_t);
+  const uint64_t expected_layout = compute_layout_id(composite, db_u32);
+
+  if (!validate_header(header, num_pt_, coeff_val_cnt,
+                       expected_layout, expected_bytes)) {
+    return false;
+  }
+  if (len < HEADER_BYTES + expected_bytes) return false;
+
+  // Alignment: the matmul prefers 64-byte alignment for AVX-512 paths and
+  // hint-only for everything else. We don't enforce it — callers who care
+  // about peak throughput should align the buffer themselves.
+  const uint8_t *payload = data + HEADER_BYTES;
+  if (composite) {
+    db_lo_ptr_ = reinterpret_cast<const uint32_t *>(payload);
+    db_hi_ptr_ = reinterpret_cast<const uint32_t *>(payload + elem_cnt * sizeof(uint32_t));
+    // Free the owned buffers — we're aliasing the borrowed one now.
+    db_lo_.reset();
+    db_hi_.reset();
+  } else {
+    db_ptr_ = reinterpret_cast<const db_coeff_t *>(payload);
+    db_aligned_.reset();
+  }
+  return true;
 }
 
 void PirServer::prep_query(std::vector<RlweCt> &fst_dim_query,
@@ -271,9 +439,9 @@ PirServer::evaluate_first_dim(std::vector<RlweCt> &fst_dim_query) {
     TIME_END(FST_DIM_PREP);
 
     TIME_START(CORE_TIME);
-    level_mat_mat_32(db_lo_.get(), query_lo.data(), inter_res_lo_.data(),
+    level_mat_mat_32(db_lo_ptr_, query_lo.data(), inter_res_lo_.data(),
                      other_dim_sz, fst_dim_sz, coeff_val_cnt, crt.q1);
-    level_mat_mat_32(db_hi_.get(), query_hi.data(), inter_res_hi_.data(),
+    level_mat_mat_32(db_hi_ptr_, query_hi.data(), inter_res_hi_.data(),
                      other_dim_sz, fst_dim_sz, coeff_val_cnt, crt.q2);
     TIME_END(CORE_TIME);
 
@@ -299,8 +467,10 @@ PirServer::evaluate_first_dim(std::vector<RlweCt> &fst_dim_query) {
   vector of size coeff_val_cnt. In OnionPIRv1, the first dimension is doing the
   component wise matrix multiplication. Further details can be found in the "matrix.h" file.
   */
-  // prepare the matrices
-  db_matrix_t db_mat { db_aligned_.get(), other_dim_sz, fst_dim_sz, coeff_val_cnt };
+  // prepare the matrices. db_ptr_ aliases either db_aligned_ (owned) or a
+  // caller-borrowed buffer; matmul is read-only so the const_cast is safe.
+  db_matrix_t db_mat { const_cast<db_coeff_t *>(db_ptr_),
+                       other_dim_sz, fst_dim_sz, coeff_val_cnt };
   db_matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
   inter_matrix_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
 

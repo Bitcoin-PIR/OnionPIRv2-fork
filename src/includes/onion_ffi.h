@@ -122,6 +122,21 @@ void onion_server_set_gsw_key(OnionServerHandle h, uint64_t client_id,
 OnionBuf onion_server_answer_query(OnionServerHandle h, uint64_t client_id,
                                    const uint8_t *query, size_t query_len);
 
+// ─── Preprocessed-DB persistence ───────────────────────────────────────────
+// Save the post-NTT, realigned database (populated by onion_server_gen_data,
+// later also by push_chunk) to a file. Returns 1 on success, 0 on failure.
+int onion_server_save_db(OnionServerHandle h, const char *path);
+
+// Load a previously-saved DB. Layout / num_pt / coeff count must match the
+// server's compile-time config. Returns 1 on success, 0 on mismatch / I/O
+// error.
+int onion_server_load_db(OnionServerHandle h, const char *path);
+
+// Zero-copy: alias an already-formatted DB buffer. The buffer must outlive
+// the server and start with the standard save_db header.
+int onion_server_load_db_from_borrowed(OnionServerHandle h,
+                                       const uint8_t *data, size_t len);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

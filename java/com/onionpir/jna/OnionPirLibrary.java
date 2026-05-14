@@ -57,4 +57,8 @@ public interface OnionPirLibrary extends Library {
 
     OnionBuf.ByValue onion_server_answer_query(Pointer h, long client_id,
                                                byte[] query, long query_len);
+
+    int onion_server_save_db(Pointer h, String path);
+    int onion_server_load_db(Pointer h, String path);
+    int onion_server_load_db_from_borrowed(Pointer h, byte[] data, long len);
 }

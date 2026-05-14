@@ -67,6 +67,28 @@ public:
   // server attached to it).
   void set_shared_key_store(SharedKeyStore *store) { shared_key_store_ = store; }
 
+  // ─── Indirect DB mode (multi-tenant shared backing store) ─────────────
+  //
+  // Lets many servers share a single, externally-owned NTT-expanded
+  // backing store. Each server keeps its own `index_table` mapping its
+  // logical plaintext id [0, num_pt) → physical entry id [0,
+  // shared_num_entries). The first-dim matmul reads each coefficient via
+  // store[level * shared_num_entries + index_table[pt_id]].
+  //
+  // Constraints:
+  //   * Standard path only (composite-first-dim is unsupported here today).
+  //   * The buffer at `store` is read-only and must outlive the server.
+  //   * `index_table_len` must equal num_pt.
+  //   * Each index_table[i] must be < shared_num_entries.
+  //
+  // On attach, the server's own db_aligned_ buffer is released — memory
+  // savings are the whole point. Detach by passing store=nullptr; the
+  // server then has no DB and must be repopulated.
+  void set_shared_database(const db_coeff_t *store,
+                           size_t shared_num_entries,
+                           const uint32_t *index_table,
+                           size_t index_table_len);
+
   /**
   Asking the server to return the original plaintext (before NTT transformation) at the given index.
   This is not doing PIR. So this reveals the index to the server. This is
@@ -119,6 +141,12 @@ private:
   const db_coeff_t *db_ptr_ = nullptr;
   const uint32_t   *db_lo_ptr_ = nullptr;
   const uint32_t   *db_hi_ptr_ = nullptr;
+
+  // Indirect-mode state. shared_store_ non-null ⇒ matmul reads via index_table_.
+  const db_coeff_t *shared_store_ = nullptr;
+  size_t            shared_num_entries_ = 0;
+  const uint32_t   *index_table_ = nullptr;
+  size_t            index_table_len_ = 0;
   std::vector<uint64_t> inter_res_lo_;
   std::vector<uint64_t> inter_res_hi_;
   PirParams pir_params_;

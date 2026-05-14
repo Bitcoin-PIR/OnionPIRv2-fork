@@ -1,5 +1,6 @@
 package com.onionpir.jna;
 
+import com.sun.jna.Memory;
 import com.sun.jna.Pointer;
 
 /**
@@ -125,6 +126,45 @@ public final class OnionPirServer implements AutoCloseable {
      */
     public void setKeyStore(OnionKeyStore store) {
         LIB.onion_server_set_key_store(handle, store == null ? null : store.raw());
+    }
+
+    // Keep references to the off-heap buffers used by setSharedDatabase so
+    // they don't get freed by the GC while the C++ side still holds raw
+    // pointers into them.
+    private Memory sharedStoreMem_;
+    private Memory sharedIndexMem_;
+
+    /**
+     * Attach a shared NTT-expanded backing store + per-server index table.
+     * Frees this server's own DB buffer; subsequent queries gather via the
+     * index table on each call.
+     *
+     * <p>{@code store} layout: {@code [level * sharedNumEntries + entryId]}.
+     * This is what {@link #saveDb(String)} writes after the 48-byte header.
+     * {@code indexTable.length} must equal
+     * {@code OnionPir.paramsInfo(0).numPlaintexts}.
+     *
+     * <p>The arrays are copied into off-heap JNA Memory buffers owned by
+     * this server. They're freed when the server is {@link #close() closed}
+     * or when {@code setSharedDatabase} is called again.
+     *
+     * @return {@code true} on success; {@code false} on validation failure.
+     */
+    public boolean setSharedDatabase(long[] store, long sharedNumEntries,
+                                     int[] indexTable) {
+        Memory storeMem = new Memory((long) store.length * Long.BYTES);
+        storeMem.write(0, store, 0, store.length);
+        Memory indexMem = new Memory((long) indexTable.length * Integer.BYTES);
+        indexMem.write(0, indexTable, 0, indexTable.length);
+        boolean ok = LIB.onion_server_set_shared_database(
+                handle, storeMem, sharedNumEntries,
+                indexMem, indexTable.length) != 0;
+        if (ok) {
+            // Retain stable refs; release any previous buffers.
+            sharedStoreMem_ = storeMem;
+            sharedIndexMem_ = indexMem;
+        }
+        return ok;
     }
 
     @Override

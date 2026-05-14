@@ -116,6 +116,12 @@ extern "C" {
                           query: *const u8, query_len: usize) -> u64;
     fn onion_queue_status(h: QueueHandle, ticket: u64) -> i32;
     fn onion_queue_result(h: QueueHandle, ticket: u64) -> COnionBuf;
+
+    fn onion_server_set_shared_database(h: ServerHandle,
+                                        store: *const u64,
+                                        shared_num_entries: u64,
+                                        index_table: *const u32,
+                                        index_table_len: u64) -> i32;
 }
 
 // ============================================================================
@@ -318,6 +324,37 @@ impl Server {
     /// reads (but does not write) it during every query.
     pub unsafe fn load_db_from_borrowed(&mut self, data: &[u8]) -> bool {
         onion_server_load_db_from_borrowed(self.h, data.as_ptr(), data.len()) != 0
+    }
+
+    /// Attach a shared NTT-expanded backing store and a per-server index
+    /// table. The matmul gathers via `index_table` on each query. Frees
+    /// the server's own DB buffer.
+    ///
+    /// `store` layout: `[level * shared_num_entries + entry_id]`. The data
+    /// is what `save_db` writes after the header (i.e. raw `db_aligned_`
+    /// bytes interpreted as `u64`).
+    ///
+    /// `index_table.len()` must equal `params_info().num_plaintexts`. Each
+    /// entry must be `< shared_num_entries`.
+    ///
+    /// Returns `false` on validation failure (composite config, length
+    /// mismatch, etc.). Pass empty slices to detach the shared store.
+    ///
+    /// # Safety
+    /// Both `store` and `index_table` must outlive the server. The server
+    /// reads (but does not write) them during every query.
+    pub unsafe fn set_shared_database(&mut self,
+                                       store: &[u64],
+                                       shared_num_entries: u64,
+                                       index_table: &[u32]) -> bool {
+        let len = onion_server_set_shared_database(
+            self.h,
+            if store.is_empty() { std::ptr::null() } else { store.as_ptr() },
+            shared_num_entries,
+            if index_table.is_empty() { std::ptr::null() } else { index_table.as_ptr() },
+            index_table.len() as u64,
+        );
+        len != 0
     }
 }
 

@@ -55,7 +55,8 @@ javac -d build -cp "${JNA_JAR}" \
     test/ClientSkRoundTrip.java \
     test/PushPlaintexts.java \
     test/SharedKeyStoreTest.java \
-    test/QueueRoundTrip.java
+    test/QueueRoundTrip.java \
+    test/SharedDatabaseTest.java
 
 echo
 echo "Running PirRoundTrip..."
@@ -92,3 +93,9 @@ echo "Running QueueRoundTrip..."
 java -cp "build:${JNA_JAR}" \
     -Djna.library.path="${LIB_DIR}" \
     QueueRoundTrip
+
+echo
+echo "Running SharedDatabaseTest..."
+java -cp "build:${JNA_JAR}" \
+    -Djna.library.path="${LIB_DIR}" \
+    SharedDatabaseTest

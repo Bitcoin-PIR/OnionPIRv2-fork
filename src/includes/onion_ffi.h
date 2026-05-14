@@ -199,6 +199,25 @@ uint64_t onion_key_store_size(OnionKeyStoreHandle h);
 void onion_server_set_key_store(OnionServerHandle server,
                                 OnionKeyStoreHandle store);
 
+// ─── Indirect DB mode ──────────────────────────────────────────────────────
+//
+// Attach a shared NTT-expanded backing store; each call's `index_table` maps
+// this server's logical plaintext ids → physical entry ids in `store`. The
+// store must outlive the server. Layout: store[level * shared_num_entries +
+// entry_id], same layout the matmul reads internally. db_coeff_t is uint64
+// in the default config (n=2048, K=1).
+//
+// Pass store=NULL to detach (after which the server has no DB until a fresh
+// gen_data / push_plaintexts / load_db).
+//
+// Returns 1 on success, 0 on validation failure (composite-first-dim
+// config, mismatched index_table_len, etc).
+int onion_server_set_shared_database(OnionServerHandle h,
+                                     const uint64_t *store,
+                                     uint64_t shared_num_entries,
+                                     const uint32_t *index_table,
+                                     uint64_t index_table_len);
+
 // ─── Async QueryQueue ──────────────────────────────────────────────────────
 //
 // Worker-thread-backed async wrapper around onion_server_answer_query.

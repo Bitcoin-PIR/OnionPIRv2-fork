@@ -92,4 +92,13 @@ public interface OnionPirLibrary extends Library {
                                byte[] query, long query_len);
     int     onion_queue_status(Pointer h, long ticket);
     OnionBuf.ByValue onion_queue_result(Pointer h, long ticket);
+
+    // store + index_table use raw Pointers (typically backed by JNA Memory)
+    // so the C++ side can keep stable pointers across queries. Java arrays
+    // (long[], int[]) are only pinned for the duration of one call.
+    int onion_server_set_shared_database(Pointer h,
+                                         Pointer store,
+                                         long shared_num_entries,
+                                         Pointer index_table,
+                                         long index_table_len);
 }

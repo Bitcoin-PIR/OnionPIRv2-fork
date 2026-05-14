@@ -317,3 +317,71 @@ fn query_queue_roundtrip() {
         assert!(!pt.is_empty(), "decrypt for target idx={} empty", targets[i]);
     }
 }
+
+/// Build a DB on one server, dump it, then have a second server consume it
+/// as a shared backing store via an identity index_table. PIR queries must
+/// return the same plaintexts as the original server.
+#[test]
+fn shared_database_identity_index_table() {
+    let pt_idx: u64 = 12;
+    let info = params_info(0);
+    let num_pt = info.num_plaintexts as u32;
+
+    // Skip if composite — set_shared_database refuses it (per the C++ guard).
+    if info.rns_mod_count != 1 {
+        eprintln!("skipping: shared_database isn't supported for K != 1 yet");
+        return;
+    }
+
+    // Stage 1: a "builder" server fills the DB and dumps it to a file.
+    let tmp_path = std::env::temp_dir().join(
+        format!("onionpir-shared-test-{}.bin", std::process::id()));
+    let tmp = tmp_path.to_str().unwrap();
+    let _ = std::fs::remove_file(&tmp_path);
+    let golden = {
+        let mut s = Server::new(0);
+        s.gen_data(&[pt_idx]);
+        let c = Client::new(0);
+        s.set_galois_keys(c.id(), &c.galois_keys());
+        s.set_gsw_key(c.id(), &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = s.answer_query(c.id(), &q);
+        let pt = c.decrypt_response(&resp);
+        assert!(s.save_db(tmp));
+        pt
+    };
+
+    // Read the file. Skip the 48-byte header (see src/server.cpp PREPROC_*).
+    let raw = std::fs::read(&tmp_path).expect("read saved DB");
+    assert!(raw.len() > 48);
+    let payload = &raw[48..];
+    // Reinterpret payload bytes as &[u64]. Alignment is satisfied — Vec from
+    // read() is 8-aligned in practice on macOS/Linux, but to be safe we copy
+    // into an aligned Vec<u64>.
+    let mut store = vec![0u64; payload.len() / 8];
+    for i in 0..store.len() {
+        let lo = i * 8;
+        store[i] = u64::from_le_bytes(payload[lo..lo+8].try_into().unwrap());
+    }
+
+    // Identity index_table: shared store has exactly num_pt entries, mapped
+    // 1:1.
+    let index_table: Vec<u32> = (0..num_pt).collect();
+
+    // Stage 2: a "serving" server uses the shared buffer.
+    {
+        let mut s = Server::new(0);
+        // SAFETY: `store` and `index_table` live until end of this block.
+        let ok = unsafe { s.set_shared_database(&store, num_pt as u64, &index_table) };
+        assert!(ok, "set_shared_database failed");
+        let c = Client::new(0);
+        s.set_galois_keys(c.id(), &c.galois_keys());
+        s.set_gsw_key(c.id(), &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = s.answer_query(c.id(), &q);
+        let pt = c.decrypt_response(&resp);
+        assert_eq!(pt, golden, "shared-DB PIR didn't reproduce the golden plaintext");
+    }
+
+    let _ = std::fs::remove_file(&tmp_path);
+}

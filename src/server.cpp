@@ -308,6 +308,36 @@ bool PirServer::load_db_from_file(const std::string &path) {
   return true;
 }
 
+void PirServer::set_shared_database(const db_coeff_t *store,
+                                    size_t shared_num_entries,
+                                    const uint32_t *index_table,
+                                    size_t index_table_len) {
+  if (pir_params_.get_composite_rns().enabled) {
+    throw std::runtime_error(
+        "set_shared_database: composite-first-dim path is not supported");
+  }
+  if (store == nullptr) {
+    // Detach. Server now has no DB until gen_data / load_db / push_plaintexts.
+    shared_store_ = nullptr;
+    shared_num_entries_ = 0;
+    index_table_ = nullptr;
+    index_table_len_ = 0;
+    return;
+  }
+  if (index_table_len != num_pt_) {
+    throw std::invalid_argument(
+        "set_shared_database: index_table_len (" + std::to_string(index_table_len)
+        + ") != num_pt (" + std::to_string(num_pt_) + ")");
+  }
+  shared_store_ = store;
+  shared_num_entries_ = shared_num_entries;
+  index_table_ = index_table;
+  index_table_len_ = index_table_len;
+  // Free the owned per-instance buffer — the whole point is to save memory.
+  db_aligned_.reset();
+  db_ptr_ = nullptr;  // not used in indirect mode
+}
+
 bool PirServer::load_db_from_borrowed(const uint8_t *data, size_t len) {
   if (!data || len < HEADER_BYTES) return false;
   uint64_t header[HEADER_U64S];
@@ -502,7 +532,25 @@ PirServer::evaluate_first_dim(std::vector<RlweCt> &fst_dim_query) {
   */
   // prepare the matrices. db_ptr_ aliases either db_aligned_ (owned) or a
   // caller-borrowed buffer; matmul is read-only so the const_cast is safe.
-  db_matrix_t db_mat { const_cast<db_coeff_t *>(db_ptr_),
+  // Indirect mode (shared_store_ set) gathers via index_table_ into a
+  // transient buffer before invoking the matmul kernel — keeps the kernel
+  // (including its AVX-512 fast path) unchanged.
+  std::vector<db_coeff_t> gathered;
+  const db_coeff_t *matmul_src = db_ptr_;
+  if (shared_store_) {
+    gathered.resize(coeff_val_cnt * num_pt_);
+    // shared_store_ layout: [level * shared_num_entries + entry_id]
+    // gathered layout:      [level * num_pt + pt_id]
+    for (size_t level = 0; level < coeff_val_cnt; ++level) {
+      const db_coeff_t *level_src = shared_store_ + level * shared_num_entries_;
+      db_coeff_t *level_dst = gathered.data() + level * num_pt_;
+      for (size_t pt = 0; pt < num_pt_; ++pt) {
+        level_dst[pt] = level_src[index_table_[pt]];
+      }
+    }
+    matmul_src = gathered.data();
+  }
+  db_matrix_t db_mat { const_cast<db_coeff_t *>(matmul_src),
                        other_dim_sz, fst_dim_sz, coeff_val_cnt };
   db_matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
   inter_matrix_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };

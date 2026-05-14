@@ -584,6 +584,33 @@ extern "C" void onion_server_set_key_store(OnionServerHandle server_h,
 
 // ─── End SharedKeyStore ────────────────────────────────────────────────────
 
+// ─── Indirect DB mode ──────────────────────────────────────────────────────
+
+extern "C" int onion_server_set_shared_database(OnionServerHandle h,
+                                                const uint64_t *store,
+                                                uint64_t shared_num_entries,
+                                                const uint32_t *index_table,
+                                                uint64_t index_table_len) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s) return 0;
+    try {
+        // db_coeff_t is uint64 in the default (n=2048,K=1) config. If a future
+        // build switches to uint32, the FFI signature stays uint64 and the
+        // cast below clamps each entry — caller-facing format is always u64
+        // for simplicity. Today this is a no-op cast.
+        s->inner.set_shared_database(
+            reinterpret_cast<const db_coeff_t *>(store),
+            static_cast<size_t>(shared_num_entries),
+            index_table,
+            static_cast<size_t>(index_table_len));
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+// ─── End indirect DB mode ──────────────────────────────────────────────────
+
 // ─── QueryQueue (non-WASM only — uses std::thread) ─────────────────────────
 
 #ifndef __EMSCRIPTEN__

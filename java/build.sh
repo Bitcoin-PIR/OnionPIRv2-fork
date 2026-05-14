@@ -49,7 +49,8 @@ javac -d build -cp "${JNA_JAR}" \
     com/onionpir/jna/OnionPirServer.java \
     test/PirRoundTrip.java \
     test/DbSaveLoad.java \
-    test/ClientSkRoundTrip.java
+    test/ClientSkRoundTrip.java \
+    test/PushPlaintexts.java
 
 echo
 echo "Running PirRoundTrip..."
@@ -68,3 +69,9 @@ echo "Running ClientSkRoundTrip..."
 java -cp "build:${JNA_JAR}" \
     -Djna.library.path="${LIB_DIR}" \
     ClientSkRoundTrip
+
+echo
+echo "Running PushPlaintexts..."
+java -cp "build:${JNA_JAR}" \
+    -Djna.library.path="${LIB_DIR}" \
+    PushPlaintexts

@@ -50,101 +50,134 @@ PirServer::PirServer(const PirParams &pir_params)
 PirServer::~PirServer() {
 }
 
-// Fills the database with random data.
-// Streams plaintexts in tiles: for each tile we generate random coefficients,
-// record any tagged for verification, NTT under each q_k, and transpose-scatter
-// into db_aligned_ — then drop the tile buffer. This keeps peak RAM at
-// ~|db_aligned_| (one copy) rather than 2x (full pre-NTT plaintext array).
-// record_indices: indices of plaintexts to save (pre-NTT) for test verification.
+namespace { constexpr size_t TILE = 8; }
+
+// Internal worker. NTT each plaintext in `tile_pt` (bs of them, each N
+// coefficients) and transpose-scatter into db_aligned_ (or db_lo_/db_hi_ for
+// the composite path) at index `pb`. Records any indices in `record_set`
+// pre-NTT for direct_get_original_plaintext. `stage` is caller-owned scratch
+// of size K * TILE * N.
+void PirServer::process_plaintext_tile(const uint64_t *tile_pt, size_t bs,
+                                       size_t pb,
+                                       const std::unordered_set<size_t> &record_set,
+                                       uint64_t *stage) {
+  const size_t coeff_count = DBConsts::PolyDegree;
+  const auto &rns_mods = pir_params_.get_rns_mods();
+  const size_t K = rns_mods.size();
+  const auto &crt = pir_params_.get_composite_rns();
+
+  // Record tagged plaintexts pre-NTT. Must happen before we mutate tile_pt
+  // (the composite path does the NTT in place).
+  for (size_t p = 0; p < bs; ++p) {
+    const size_t poly_id = pb + p;
+    if (record_set.count(poly_id)) {
+      RlwePt pt;
+      pt.data.assign(tile_pt + p * coeff_count,
+                     tile_pt + (p + 1) * coeff_count);
+      recorded_pts_[poly_id] = std::move(pt);
+    }
+  }
+
+  if (crt.enabled) {
+    // Composite path: NTT under Q = q1*q2 in place, then split each
+    // coefficient into (mod q1, mod q2) u32 limbs in the coeff-major layout.
+    // We need a writable copy of tile_pt since ntt_fwd is in place.
+    std::vector<uint64_t> scratch(tile_pt, tile_pt + bs * coeff_count);
+    const uint64_t Q  = rns_mods[0];
+    const uint64_t q1 = crt.q1;
+    const uint64_t q2 = crt.q2;
+    for (size_t p = 0; p < bs; ++p) {
+      uint64_t *coeffs = scratch.data() + p * coeff_count;
+      utils::ntt_fwd(coeffs, coeff_count, Q);
+      const size_t poly_id = pb + p;
+      for (size_t coeff_idx = 0; coeff_idx < coeff_count; ++coeff_idx) {
+        const uint64_t c = coeffs[coeff_idx];
+        const size_t idx = coeff_idx * num_pt_ + poly_id;
+        db_lo_[idx] = static_cast<uint32_t>(c % q1);
+        db_hi_[idx] = static_cast<uint32_t>(c % q2);
+      }
+    }
+    return;
+  }
+
+  // Standard path: NTT each plaintext under each q_k into `stage`, then
+  // tile-transpose-write into db_aligned_. Layout matches the matmul:
+  // db_aligned_[coeff_idx * num_pt_ + poly_id], coeff_idx in [0, K*N).
+  for (size_t k = 0; k < K; ++k) {
+    const uint64_t qk = rns_mods[k];
+    uint64_t *limb_base = stage + k * TILE * coeff_count;
+    for (size_t p = 0; p < bs; ++p) {
+      uint64_t *dst = limb_base + p * coeff_count;
+      const uint64_t *src = tile_pt + p * coeff_count;
+      for (size_t i = 0; i < coeff_count; ++i) dst[i] = src[i] % qk;
+      utils::ntt_fwd(dst, coeff_count, qk);
+    }
+  }
+  for (size_t k = 0; k < K; ++k) {
+    uint64_t *limb_base = stage + k * TILE * coeff_count;
+    for (size_t coeff_idx = 0; coeff_idx < coeff_count; ++coeff_idx) {
+      db_coeff_t *out = db_aligned_.get() +
+                        (k * coeff_count + coeff_idx) * num_pt_ + pb;
+      for (size_t p = 0; p < bs; ++p) {
+        out[p] = static_cast<db_coeff_t>(limb_base[p * coeff_count + coeff_idx]);
+      }
+    }
+  }
+}
+
+// Fills the database with random data. Streams in tiles so peak RAM stays at
+// ~|db_aligned_| (one copy) rather than 2x.
 void PirServer::gen_data(const std::vector<size_t>& record_indices) {
   BENCH_PRINT("Generating random data for the server database...");
-
-  // Seed a fast PRNG with OS entropy (avoids per-coefficient syscall overhead of /dev/urandom)
   std::mt19937_64 rng(std::random_device{}());
-
   recorded_pts_.clear();
   recorded_pts_.reserve(record_indices.size());
-  // O(1) lookup per plaintext (the linear find scaled poorly at 8 GB DB sizes).
   std::unordered_set<size_t> record_set(record_indices.begin(),
                                         record_indices.end());
 
   const size_t coeff_count = DBConsts::PolyDegree;
   const uint64_t plain_mod = pir_params_.get_plain_mod();
-  const auto &rns_mods = pir_params_.get_rns_mods();
-  const size_t K = rns_mods.size();
-  const auto &crt = pir_params_.get_composite_rns();
+  const size_t K = pir_params_.get_rns_mods().size();
 
   TIME_ONCE_START("DB gen+NTT+realign");
-
-  constexpr size_t TILE = 8;
-  // Per-tile pre-NTT buffer: TILE plaintexts, each coeff_count uint64. Lives
-  // for the tile only; total scratch ≈ TILE·N·8 bytes (e.g. 128 KB at N=2048).
   std::vector<uint64_t> tile_pt(TILE * coeff_count);
-  // Per-tile NTT staging: K limbs × TILE × coeff_count. For the composite
-  // path K=1 (NTT runs under the composite Q before splitting).
   std::vector<uint64_t> stage(K * TILE * coeff_count);
 
   for (size_t pb = 0; pb < num_pt_; pb += TILE) {
     const size_t bs = std::min(TILE, num_pt_ - pb);
-
-    // Pass 1 (per tile): random fill + record tagged entries.
     for (size_t p = 0; p < bs; ++p) {
       uint64_t *dst = tile_pt.data() + p * coeff_count;
       for (size_t i = 0; i < coeff_count; ++i) dst[i] = rng() % plain_mod;
-      const size_t poly_id = pb + p;
-      if (record_set.count(poly_id)) {
-        RlwePt pt;
-        pt.data.assign(dst, dst + coeff_count);
-        recorded_pts_[poly_id] = std::move(pt);
-      }
     }
-
-    if (crt.enabled) {
-      // Composite path: NTT under Q = q1*q2, then split each coefficient into
-      // (mod q1, mod q2) u32 limbs in the coeff-major layout.
-      const uint64_t Q  = rns_mods[0];
-      const uint64_t q1 = crt.q1;
-      const uint64_t q2 = crt.q2;
-      for (size_t p = 0; p < bs; ++p) {
-        uint64_t *coeffs = tile_pt.data() + p * coeff_count;
-        utils::ntt_fwd(coeffs, coeff_count, Q);
-        const size_t poly_id = pb + p;
-        for (size_t coeff_idx = 0; coeff_idx < coeff_count; ++coeff_idx) {
-          const uint64_t c = coeffs[coeff_idx];
-          const size_t idx = coeff_idx * num_pt_ + poly_id;
-          db_lo_[idx] = static_cast<uint32_t>(c % q1);
-          db_hi_[idx] = static_cast<uint32_t>(c % q2);
-        }
-      }
-      continue;
-    }
-
-    // Standard path: NTT each plaintext under each q_k into stage, then
-    // tile-transpose-write into db_aligned_. Layout matches the matmul:
-    // db_aligned_[coeff_idx * num_pt_ + poly_id], coeff_idx in [0, K*N).
-    for (size_t k = 0; k < K; ++k) {
-      const uint64_t qk = rns_mods[k];
-      uint64_t *limb_base = stage.data() + k * TILE * coeff_count;
-      for (size_t p = 0; p < bs; ++p) {
-        uint64_t *dst = limb_base + p * coeff_count;
-        const uint64_t *src = tile_pt.data() + p * coeff_count;
-        for (size_t i = 0; i < coeff_count; ++i) dst[i] = src[i] % qk;
-        utils::ntt_fwd(dst, coeff_count, qk);
-      }
-    }
-    for (size_t k = 0; k < K; ++k) {
-      uint64_t *limb_base = stage.data() + k * TILE * coeff_count;
-      for (size_t coeff_idx = 0; coeff_idx < coeff_count; ++coeff_idx) {
-        db_coeff_t *out = db_aligned_.get() +
-                          (k * coeff_count + coeff_idx) * num_pt_ + pb;
-        for (size_t p = 0; p < bs; ++p) {
-          out[p] = static_cast<db_coeff_t>(limb_base[p * coeff_count + coeff_idx]);
-        }
-      }
-    }
+    process_plaintext_tile(tile_pt.data(), bs, pb, record_set, stage.data());
   }
   TIME_ONCE_END("DB gen+NTT+realign");
   PRINT_ONCE("DB gen+NTT+realign");
+}
+
+void PirServer::push_plaintexts(const uint64_t *plaintexts, size_t count,
+                                size_t offset,
+                                const std::vector<size_t> &record_indices) {
+  if (count == 0) return;
+  if (offset + count > num_pt_) {
+    throw std::out_of_range(
+        "push_plaintexts: offset + count > num_pt (" +
+        std::to_string(offset) + " + " + std::to_string(count) + " > " +
+        std::to_string(num_pt_) + ")");
+  }
+
+  std::unordered_set<size_t> record_set(record_indices.begin(),
+                                        record_indices.end());
+
+  const size_t coeff_count = DBConsts::PolyDegree;
+  const size_t K = pir_params_.get_rns_mods().size();
+  std::vector<uint64_t> stage(K * TILE * coeff_count);
+
+  for (size_t i = 0; i < count; i += TILE) {
+    const size_t bs = std::min(TILE, count - i);
+    process_plaintext_tile(plaintexts + i * coeff_count, bs, offset + i,
+                           record_set, stage.data());
+  }
 }
 
 // ───────────────────────────── DB persistence ──────────────────────────────

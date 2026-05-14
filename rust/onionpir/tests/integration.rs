@@ -140,3 +140,56 @@ fn client_secret_key_roundtrip() {
     assert_eq!(pt, golden,
                "restored client did not reproduce the original plaintext");
 }
+
+/// Build a DB from random data, then overwrite one specific plaintext with a
+/// known pattern via push_plaintexts, and verify a PIR query for that index
+/// returns the same pattern. Exercises the production-mode chunked-build path.
+#[test]
+fn push_plaintexts_roundtrip() {
+    let info = params_info(0);
+    let n = info.poly_degree as usize;
+    let pt_mod_bits = 14u64; // pessimistic — log(t) varies by config, but our
+                             // patterns are all small so they fit any t.
+    let pt_idx: u64 = 17;
+
+    let mut server = Server::new(0);
+
+    // Step 1: fill the DB with random data so all the matmul scaffolding is in
+    // place. record pt_idx so we have a starting point for the comparison.
+    server.gen_data(&[pt_idx]);
+
+    // Step 2: build a deterministic, recognizable plaintext for slot pt_idx.
+    //   coeff[i] = i & 0xFF (8 LSBs of the index)
+    // Then push it. The push must overwrite whatever gen_data put there.
+    let payload: Vec<u64> = (0..n).map(|i| (i & 0xff) as u64).collect();
+    let pushed_ok = server.push_plaintexts(&payload, 1, pt_idx, &[pt_idx]);
+    assert!(pushed_ok, "push_plaintexts failed");
+    let _ = pt_mod_bits;
+
+    // Step 3: query, decrypt, and confirm the recovered plaintext matches the
+    // payload we just pushed. We compare against the server's recorded copy
+    // (re-recorded on push because we passed pt_idx in record_indices).
+    let c = Client::new(0);
+    server.set_galois_keys(c.id(), &c.galois_keys());
+    server.set_gsw_key(c.id(), &c.gsw_key());
+    let q = c.generate_query(pt_idx);
+    let resp = server.answer_query(c.id(), &q);
+    let decrypted = c.decrypt_response(&resp);
+    let recorded = server.get_original_plaintext(pt_idx);
+    assert_eq!(decrypted, recorded,
+               "push_plaintexts: PIR result != server's recorded plaintext");
+
+    // Verify the recorded plaintext actually contains the pushed pattern.
+    // Format is [u32 N (LE)][u64 coeff_0]...[u64 coeff_{N-1}], so byte 4..12
+    // is coeff[0] (= 0), byte 12..20 is coeff[1] (= 1), etc.
+    assert!(recorded.len() >= 4 + n * 8);
+    let n_from_header =
+        u32::from_le_bytes(recorded[0..4].try_into().unwrap()) as usize;
+    assert_eq!(n_from_header, n);
+    for i in 0..std::cmp::min(n, 16) {
+        let lo = 4 + i * 8;
+        let coeff = u64::from_le_bytes(recorded[lo..lo+8].try_into().unwrap());
+        assert_eq!(coeff, (i & 0xff) as u64,
+                   "coeff[{}] = {}, want {}", i, coeff, i & 0xff);
+    }
+}

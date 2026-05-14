@@ -46,6 +46,24 @@ public final class OnionPirServer implements AutoCloseable {
     }
 
     /**
+     * Push externally-provided plaintexts into the DB. {@code plaintexts} is
+     * a flat {@code long[]} of length {@code count * N}; plaintext {@code p}
+     * occupies indices {@code [p*N, (p+1)*N)} with each value in {@code [0, t)}.
+     * The chunk is stored at DB slots {@code [offset, offset+count)}.
+     *
+     * @param recordIndices optional subset of {@code [offset, offset+count)} to
+     *                      retain pre-NTT for {@link #getOriginalPlaintext(long)}.
+     * @return {@code true} on success; {@code false} on range overflow.
+     */
+    public boolean pushPlaintexts(long[] plaintexts, long count, long offset,
+                                  long[] recordIndices) {
+        if (recordIndices == null) recordIndices = new long[0];
+        return LIB.onion_server_push_plaintexts(
+                handle, plaintexts, count, offset,
+                recordIndices, recordIndices.length) != 0;
+    }
+
+    /**
      * Recover the pre-NTT plaintext for {@code ptIdx} (must have been passed
      * to a prior {@link #genData(long[])} call). Format matches
      * {@link OnionPirClient#decryptResponse(byte[])} for direct equality

@@ -78,6 +78,10 @@ extern "C" {
     fn onion_server_new(num_entries: u64) -> ServerHandle;
     fn onion_server_free(h: ServerHandle);
     fn onion_server_gen_data(h: ServerHandle, indices: *const u64, num_indices: usize);
+    fn onion_server_push_plaintexts(h: ServerHandle, plaintexts: *const u64,
+                                    count: u64, offset: u64,
+                                    record_indices: *const u64,
+                                    num_record_indices: usize) -> i32;
     fn onion_server_get_original_plaintext(h: ServerHandle, pt_idx: u64) -> COnionBuf;
     fn onion_server_set_galois_keys(h: ServerHandle, client_id: u64, data: *const u8, len: usize);
     fn onion_server_set_gsw_key(h: ServerHandle, client_id: u64, data: *const u8, len: usize);
@@ -223,6 +227,28 @@ impl Server {
     pub fn gen_data(&mut self, query_indices: &[u64]) {
         unsafe {
             onion_server_gen_data(self.h, query_indices.as_ptr(), query_indices.len());
+        }
+    }
+
+    /// Push externally-provided plaintexts into the DB.
+    ///
+    /// `plaintexts` is a flat slice of `count * N` u64s; plaintext `p`
+    /// occupies coefficients `[p*N, (p+1)*N)` and each value must be in
+    /// `[0, t)`. The chunk is stored at DB slots `[offset, offset+count)`.
+    ///
+    /// `record_indices`: optional subset of `[offset, offset+count)` to keep
+    /// pre-NTT for `get_original_plaintext` (test path).
+    ///
+    /// Returns `false` if `offset + count` overflows `num_pt` or the engine
+    /// rejected the call.
+    pub fn push_plaintexts(&mut self, plaintexts: &[u64], count: u64, offset: u64,
+                           record_indices: &[u64]) -> bool {
+        let r_ptr = if record_indices.is_empty() { std::ptr::null() }
+                    else { record_indices.as_ptr() };
+        unsafe {
+            onion_server_push_plaintexts(self.h, plaintexts.as_ptr(),
+                                          count, offset,
+                                          r_ptr, record_indices.len()) != 0
         }
     }
 

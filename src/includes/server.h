@@ -7,6 +7,7 @@
 #include <map>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 class PirServer {
 public:
@@ -18,6 +19,23 @@ public:
    * It pushes the data to the database in chunks.
    */
   void gen_data(const std::vector<size_t>& record_indices = {});
+
+  /**
+   * Push externally-provided plaintexts into the database. Each plaintext is
+   * N coefficients (uint64 each) in [0, t). Plaintexts at indices
+   * [offset, offset+count) are NTT-transformed and realigned in place;
+   * subsequent queries see the new data immediately. Re-pushing the same
+   * range overwrites prior content.
+   *
+   * Constraints:
+   *   - offset + count <= num_pt
+   *   - plaintexts contains count * N uint64s, plaintext p at p * N
+   *
+   * `record_indices`: a (possibly empty) subset of [offset, offset+count) to
+   *                   retain pre-NTT for direct_get_original_plaintext.
+   */
+  void push_plaintexts(const uint64_t *plaintexts, size_t count, size_t offset,
+                       const std::vector<size_t> &record_indices = {});
 
   // ─── Preprocessed-database persistence ────────────────────────────────
   // Save / load the post-NTT, realigned database produced by gen_data() (and,
@@ -103,6 +121,14 @@ private:
   // make sure that all the first dimension is in the same expansion sub-tree.
   // The expand query used in Cheetah is not suitable for this, though we don't
   // need special permutation for packing when using it.
+  // Internal: NTT + realign a tile of `bs` plaintexts whose first plaintext
+  // lands at index `pb` in the DB. `tile_pt` holds bs * N pre-NTT
+  // coefficients; `stage` is a reusable K * TILE * N scratch buffer the
+  // caller owns. Used by both gen_data() and push_plaintexts().
+  void process_plaintext_tile(const uint64_t *tile_pt, size_t bs, size_t pb,
+                              const std::unordered_set<size_t> &record_set,
+                              uint64_t *stage);
+
   std::vector<RlweCt> fast_expand_qry(size_t client_id, RlweCt &ciphertext) const;
 
   std::vector<RlweCt> full_expand_qry(size_t client_id, RlweCt &ciphertext) const;

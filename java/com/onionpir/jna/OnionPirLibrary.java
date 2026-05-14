@@ -54,6 +54,10 @@ public interface OnionPirLibrary extends Library {
     void    onion_server_free(Pointer h);
 
     void onion_server_gen_data(Pointer h, long[] record_indices, long num_indices);
+    int  onion_server_push_plaintexts(Pointer h, long[] plaintexts,
+                                       long count, long offset,
+                                       long[] record_indices,
+                                       long num_record_indices);
     OnionBuf.ByValue onion_server_get_original_plaintext(Pointer h, long pt_idx);
 
     void onion_server_set_galois_keys(Pointer h, long client_id, byte[] data, long len);

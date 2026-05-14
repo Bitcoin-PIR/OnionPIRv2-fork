@@ -118,6 +118,23 @@ void onion_server_gen_data(OnionServerHandle h,
                            const uint64_t *record_indices,
                            size_t num_indices);
 
+// Push externally-provided plaintexts into the DB. `plaintexts` is a flat
+// uint64 array of size count * N (where N is poly_degree); each plaintext
+// occupies N contiguous coefficients, each in [0, t). Stores plaintexts in
+// DB slots [offset, offset + count); offset + count must be <= num_pt.
+//
+// Pass record_indices = nullptr (or num_record_indices = 0) for production;
+// any indices listed are retained pre-NTT for the test helper
+// onion_server_get_original_plaintext.
+//
+// Returns 1 on success, 0 on range overflow / error.
+int onion_server_push_plaintexts(OnionServerHandle h,
+                                 const uint64_t *plaintexts,
+                                 uint64_t count,
+                                 uint64_t offset,
+                                 const uint64_t *record_indices,
+                                 size_t num_record_indices);
+
 // Returns the pre-NTT plaintext at pt_idx as `[u32 N][u64 coeff_0]…`.
 // Only valid for indices that were passed to onion_server_gen_data.
 // Caller frees.

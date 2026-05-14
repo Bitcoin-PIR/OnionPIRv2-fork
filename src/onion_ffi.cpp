@@ -425,6 +425,30 @@ extern "C" void onion_server_gen_data(OnionServerHandle h,
     }
 }
 
+extern "C" int onion_server_push_plaintexts(OnionServerHandle h,
+                                            const uint64_t *plaintexts,
+                                            uint64_t count,
+                                            uint64_t offset,
+                                            const uint64_t *record_indices,
+                                            size_t num_record_indices) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s || (!plaintexts && count > 0)) return 0;
+    try {
+        std::vector<size_t> rec;
+        if (record_indices && num_record_indices > 0) {
+            rec.reserve(num_record_indices);
+            for (size_t i = 0; i < num_record_indices; i++) {
+                rec.push_back(static_cast<size_t>(record_indices[i]));
+            }
+        }
+        s->inner.push_plaintexts(plaintexts, static_cast<size_t>(count),
+                                 static_cast<size_t>(offset), rec);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
 extern "C" OnionBuf onion_server_get_original_plaintext(OnionServerHandle h,
                                                        uint64_t pt_idx) {
     auto *s = static_cast<OnionPirServer_t *>(h);

@@ -199,6 +199,41 @@ uint64_t onion_key_store_size(OnionKeyStoreHandle h);
 void onion_server_set_key_store(OnionServerHandle server,
                                 OnionKeyStoreHandle store);
 
+// ─── Async QueryQueue ──────────────────────────────────────────────────────
+//
+// Worker-thread-backed async wrapper around onion_server_answer_query.
+// Submit a query (returns a ticket), poll status, then fetch the result.
+// The queue holds a non-owning reference to the server — the server must
+// outlive the queue. The caller must NOT touch the server (set keys,
+// gen_data, push_plaintexts) while the queue has pending or in-flight
+// work — drain first or call onion_queue_stop.
+
+typedef void *OnionQueueHandle;
+
+enum {
+    ONION_QUERY_QUEUED     = 0,
+    ONION_QUERY_PROCESSING = 1,
+    ONION_QUERY_DONE       = 2,
+    ONION_QUERY_ERROR      = 3,
+    ONION_QUERY_NOT_FOUND  = 4,
+};
+
+OnionQueueHandle onion_queue_new(OnionServerHandle server);
+void             onion_queue_free(OnionQueueHandle h);
+void             onion_queue_stop(OnionQueueHandle h);
+
+// Enqueue. Returns a non-zero ticket, or 0 if the queue has been stopped.
+uint64_t onion_queue_submit(OnionQueueHandle h, uint64_t client_id,
+                            const uint8_t *query, size_t query_len);
+
+// Non-blocking status. Returns one of the ONION_QUERY_* constants.
+int onion_queue_status(OnionQueueHandle h, uint64_t ticket);
+
+// Fetch + consume. Returns an OnionBuf with the response bytes (status
+// DONE) or the UTF-8 error message (status ERROR). On QUEUED/PROCESSING/
+// NOT_FOUND the buf has data == NULL and len == 0. Caller frees.
+OnionBuf onion_queue_result(OnionQueueHandle h, uint64_t ticket);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

@@ -26,6 +26,9 @@ public final class OnionPirServer implements AutoCloseable {
     private static final OnionPirLibrary LIB = OnionPirLibrary.INSTANCE;
     private Pointer handle;
 
+    /** Package-private — used by {@link OnionPirQueue} to wire onto the server. */
+    Pointer rawHandle() { return handle; }
+
     /**
      * @param numEntries currently ignored — upstream params are compile-time.
      */

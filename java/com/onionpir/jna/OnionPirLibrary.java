@@ -82,4 +82,14 @@ public interface OnionPirLibrary extends Library {
     void    onion_key_store_remove(Pointer h, long client_id);
     long    onion_key_store_size(Pointer h);
     void    onion_server_set_key_store(Pointer server, Pointer store);
+
+    // ── QueryQueue ───────────────────────────────────────────────────────
+
+    Pointer onion_queue_new(Pointer server);
+    void    onion_queue_free(Pointer h);
+    void    onion_queue_stop(Pointer h);
+    long    onion_queue_submit(Pointer h, long client_id,
+                               byte[] query, long query_len);
+    int     onion_queue_status(Pointer h, long ticket);
+    OnionBuf.ByValue onion_queue_result(Pointer h, long ticket);
 }

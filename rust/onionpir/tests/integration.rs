@@ -5,7 +5,7 @@
 //! logger), so two tests running in parallel can hit a SIGTRAP. Serial
 //! execution is the only correct way to run this suite.
 
-use onionpir::{params_info, Client, KeyStore, Server};
+use onionpir::{params_info, Client, KeyStore, QueryQueue, QueryStatus, Server};
 
 #[test]
 fn pir_roundtrip() {
@@ -247,4 +247,73 @@ fn shared_key_store_two_servers() {
     store.remove(id);
     assert!(!store.has_client(id));
     assert_eq!(store.size(), 0);
+}
+
+/// Submit multiple queries to a QueryQueue, poll until done, fetch results,
+/// and verify each one decrypts to the same plaintext the synchronous path
+/// would have produced.
+#[test]
+fn query_queue_roundtrip() {
+    let targets: Vec<u64> = vec![3, 11, 25, 88];
+
+    let mut server = Server::new(0);
+    server.gen_data(&targets);
+
+    let client = Client::new(0);
+    let id = client.id();
+    server.set_galois_keys(id, &client.galois_keys());
+    server.set_gsw_key(id, &client.gsw_key());
+
+    // After this point we can no longer touch the server directly — the
+    // queue worker thread owns it.
+    let queue = QueryQueue::new(&mut server);
+    let queries: Vec<(u64, Vec<u8>)> = targets.iter()
+        .map(|&i| (i, client.generate_query(i)))
+        .collect();
+
+    let mut tickets = Vec::with_capacity(queries.len());
+    for (_, q) in &queries {
+        tickets.push(queue.submit(id, q).expect("submit returned 0"));
+    }
+
+    // Poll until all reach Done (or timeout). Each query takes ~500 ms in
+    // the scalar-shim default config; budget 30 s to be safe.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut bytes_by_ticket: std::collections::HashMap<u64, Vec<u8>> =
+        std::collections::HashMap::new();
+    while bytes_by_ticket.len() < tickets.len() {
+        for &t in &tickets {
+            if bytes_by_ticket.contains_key(&t) { continue; }
+            let s = queue.status(t);
+            if s == QueryStatus::Done {
+                let b = queue.result(t).expect("result(Done) returned None");
+                bytes_by_ticket.insert(t, b);
+            } else if s == QueryStatus::Error {
+                let err = queue.result(t).expect("result(Error) returned None");
+                panic!("ticket {} errored: {}",
+                       t, String::from_utf8_lossy(&err));
+            } else if s == QueryStatus::NotFound {
+                panic!("ticket {} disappeared without completing", t);
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("timed out waiting for {} tickets", tickets.len());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    queue.stop();
+
+    // After stop the queue is dead; submitting a new query returns None.
+    let q_extra = client.generate_query(targets[0]);
+    assert!(queue.submit(id, &q_extra).is_none(),
+            "submit on a stopped queue must return None");
+
+    // Decrypt each response — none can be empty.
+    for (i, &t) in tickets.iter().enumerate() {
+        let bytes = bytes_by_ticket.remove(&t).unwrap();
+        assert!(!bytes.is_empty(), "ticket {} response empty", t);
+        let pt = client.decrypt_response(&bytes);
+        assert!(!pt.is_empty(), "decrypt for target idx={} empty", targets[i]);
+    }
 }

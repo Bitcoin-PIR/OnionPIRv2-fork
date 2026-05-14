@@ -102,7 +102,7 @@ endif()
 #                        (main.cpp and the in-tree test harness under src/tests/).
 file(GLOB ONIONPIR_CORE_SRC
     src/bv_keyswitch.cpp src/client.cpp src/gsw.cpp src/logging.cpp
-    src/matrix.cpp src/pir.cpp src/rlwe.cpp src/server.cpp
+    src/matrix.cpp src/pir.cpp src/query_queue.cpp src/rlwe.cpp src/server.cpp
     src/shared_key_store.cpp src/utils.cpp
 )
 if (NOT USE_HEXL)

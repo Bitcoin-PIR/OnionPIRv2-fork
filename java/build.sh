@@ -48,11 +48,14 @@ javac -d build -cp "${JNA_JAR}" \
     com/onionpir/jna/OnionPirClient.java \
     com/onionpir/jna/OnionPirServer.java \
     com/onionpir/jna/OnionKeyStore.java \
+    com/onionpir/jna/QueryStatus.java \
+    com/onionpir/jna/OnionPirQueue.java \
     test/PirRoundTrip.java \
     test/DbSaveLoad.java \
     test/ClientSkRoundTrip.java \
     test/PushPlaintexts.java \
-    test/SharedKeyStoreTest.java
+    test/SharedKeyStoreTest.java \
+    test/QueueRoundTrip.java
 
 echo
 echo "Running PirRoundTrip..."
@@ -83,3 +86,9 @@ echo "Running SharedKeyStoreTest..."
 java -cp "build:${JNA_JAR}" \
     -Djna.library.path="${LIB_DIR}" \
     SharedKeyStoreTest
+
+echo
+echo "Running QueueRoundTrip..."
+java -cp "build:${JNA_JAR}" \
+    -Djna.library.path="${LIB_DIR}" \
+    QueueRoundTrip

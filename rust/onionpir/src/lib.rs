@@ -58,6 +58,7 @@ pub struct ParamsInfo {
 type ClientHandle = *mut c_void;
 type ServerHandle = *mut c_void;
 type KeyStoreHandle = *mut c_void;
+type QueueHandle = *mut c_void;
 
 #[link(name = "onionpir", kind = "static")]
 extern "C" {
@@ -107,6 +108,14 @@ extern "C" {
     fn onion_key_store_remove(h: KeyStoreHandle, client_id: u64);
     fn onion_key_store_size(h: KeyStoreHandle) -> u64;
     fn onion_server_set_key_store(server: ServerHandle, store: KeyStoreHandle);
+
+    fn onion_queue_new(server: ServerHandle) -> QueueHandle;
+    fn onion_queue_free(h: QueueHandle);
+    fn onion_queue_stop(h: QueueHandle);
+    fn onion_queue_submit(h: QueueHandle, client_id: u64,
+                          query: *const u8, query_len: usize) -> u64;
+    fn onion_queue_status(h: QueueHandle, ticket: u64) -> i32;
+    fn onion_queue_result(h: QueueHandle, ticket: u64) -> COnionBuf;
 }
 
 // ============================================================================
@@ -388,6 +397,92 @@ impl Default for KeyStore {
 impl Drop for KeyStore {
     fn drop(&mut self) {
         unsafe { onion_key_store_free(self.h) };
+    }
+}
+
+// ============================================================================
+// QueryQueue — async worker-thread wrapper around Server::answer_query
+// ============================================================================
+
+/// Status of an in-flight ticket. Mirrors the C ABI's `ONION_QUERY_*` constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryStatus {
+    Queued,
+    Processing,
+    Done,
+    Error,
+    NotFound,
+}
+
+impl QueryStatus {
+    fn from_raw(v: i32) -> Self {
+        match v {
+            0 => Self::Queued,
+            1 => Self::Processing,
+            2 => Self::Done,
+            3 => Self::Error,
+            _ => Self::NotFound,
+        }
+    }
+}
+
+/// Worker-thread wrapper around a [`Server`]. Submit queries, poll status,
+/// then fetch results.
+///
+/// **Lifetime contract**: the wrapped `Server` must outlive the `QueryQueue`.
+/// While the queue has pending or in-flight work, callers must NOT mutate the
+/// server (e.g. `set_galois_keys`, `gen_data`, `push_plaintexts`) — drain
+/// tickets first or call [`QueryQueue::stop`].
+pub struct QueryQueue<'s> {
+    h: QueueHandle,
+    _phantom: std::marker::PhantomData<&'s Server>,
+}
+
+unsafe impl Send for QueryQueue<'_> {}
+
+impl<'s> QueryQueue<'s> {
+    /// Spawn the worker thread for `server`. Borrows the server immutably
+    /// — concurrent direct calls to `server.answer_query` would race with
+    /// the worker, so the borrow checker forbids them by holding the
+    /// shared reference for the queue's lifetime.
+    pub fn new(server: &'s mut Server) -> Self {
+        let h = unsafe { onion_queue_new(server.h) };
+        assert!(!h.is_null(), "onion_queue_new returned null");
+        Self { h, _phantom: std::marker::PhantomData }
+    }
+
+    /// Enqueue a query. Returns the ticket, or `None` if the queue has been
+    /// stopped.
+    pub fn submit(&self, client_id: u64, query: &[u8]) -> Option<u64> {
+        let t = unsafe {
+            onion_queue_submit(self.h, client_id, query.as_ptr(), query.len())
+        };
+        if t == 0 { None } else { Some(t) }
+    }
+
+    /// Non-blocking status.
+    pub fn status(&self, ticket: u64) -> QueryStatus {
+        QueryStatus::from_raw(unsafe { onion_queue_status(self.h, ticket) })
+    }
+
+    /// Fetch and consume the result for `ticket`. Returns `Some(bytes)` if
+    /// the ticket reached `Done` (response bytes) or `Error` (UTF-8 error
+    /// message); returns `None` otherwise.
+    pub fn result(&self, ticket: u64) -> Option<Vec<u8>> {
+        let buf = unsafe { onion_queue_result(self.h, ticket) };
+        if buf.data.is_null() { None } else { Some(buf_to_vec(buf)) }
+    }
+
+    /// Cooperative shutdown. Stops accepting new submissions, lets the
+    /// worker finish its current query, then joins. Idempotent.
+    pub fn stop(&self) {
+        unsafe { onion_queue_stop(self.h) };
+    }
+}
+
+impl Drop for QueryQueue<'_> {
+    fn drop(&mut self) {
+        unsafe { onion_queue_free(self.h) };
     }
 }
 

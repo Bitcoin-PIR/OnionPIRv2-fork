@@ -36,6 +36,9 @@
 #include "gsw.h"
 #include "rlwe.h"
 #include "database_constants.h"
+#ifndef __EMSCRIPTEN__
+#  include "query_queue.h"
+#endif
 
 #include <cstdint>
 #include <cstdlib>
@@ -580,6 +583,58 @@ extern "C" void onion_server_set_key_store(OnionServerHandle server_h,
 }
 
 // ─── End SharedKeyStore ────────────────────────────────────────────────────
+
+// ─── QueryQueue (non-WASM only — uses std::thread) ─────────────────────────
+
+#ifndef __EMSCRIPTEN__
+
+extern "C" OnionQueueHandle onion_queue_new(OnionServerHandle server_h) {
+    auto *s = static_cast<OnionPirServer_t *>(server_h);
+    if (!s) return nullptr;
+    try {
+        return new QueryQueue(s->inner);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void onion_queue_free(OnionQueueHandle h) {
+    delete static_cast<QueryQueue *>(h);
+}
+
+extern "C" void onion_queue_stop(OnionQueueHandle h) {
+    auto *q = static_cast<QueryQueue *>(h);
+    if (q) q->stop();
+}
+
+extern "C" uint64_t onion_queue_submit(OnionQueueHandle h, uint64_t client_id,
+                                       const uint8_t *query, size_t query_len) {
+    auto *q = static_cast<QueryQueue *>(h);
+    if (!q || !query) return 0;
+    try {
+        return q->submit(static_cast<size_t>(client_id), query, query_len);
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" int onion_queue_status(OnionQueueHandle h, uint64_t ticket) {
+    auto *q = static_cast<QueryQueue *>(h);
+    if (!q) return ONION_QUERY_NOT_FOUND;
+    return static_cast<int>(q->status(ticket));
+}
+
+extern "C" OnionBuf onion_queue_result(OnionQueueHandle h, uint64_t ticket) {
+    auto *q = static_cast<QueryQueue *>(h);
+    if (!q) return OnionBuf{nullptr, 0};
+    std::vector<uint8_t> bytes;
+    if (!q->result(ticket, bytes)) return OnionBuf{nullptr, 0};
+    return vec_to_buf(bytes);
+}
+
+#endif  // __EMSCRIPTEN__
+
+// ─── End QueryQueue ────────────────────────────────────────────────────────
 
 extern "C" OnionBuf onion_server_answer_query(OnionServerHandle h, uint64_t client_id,
                                               const uint8_t *query, size_t query_len) {

@@ -124,17 +124,24 @@ if (USE_HEXL AND HEXL_FOUND)
     target_link_libraries(Onion-PIR PUBLIC HEXL::hexl)
 endif()
 
-# Static library target (onionpir): core engine + C ABI, for Rust / Java FFI
-# consumers. Disabled by default since the headline executable doesn't need it;
-# Rust's build.rs flips this on with -DONIONPIR_BUILD_FFI=ON.
-option(ONIONPIR_BUILD_FFI "Build the onionpir static library with C ABI" OFF)
+# Library target (onionpir): core engine + C ABI, for Rust / Java / native
+# consumers. Disabled by default since the headline executable doesn't need it.
+#   ONIONPIR_BUILD_FFI=ON       — build the library (Rust crate flips this on)
+#   ONIONPIR_BUILD_SHARED=ON    — build as a .dylib / .so instead of .a
+#                                  (Java JNA loads a shared library by name)
+option(ONIONPIR_BUILD_FFI    "Build the onionpir library with C ABI" OFF)
+option(ONIONPIR_BUILD_SHARED "Build onionpir as a shared library (default: static)" OFF)
 if (ONIONPIR_BUILD_FFI)
-    add_library(onionpir STATIC ${ONIONPIR_CORE_SRC} ${ONIONPIR_FFI_SRC})
+    if (ONIONPIR_BUILD_SHARED)
+        add_library(onionpir SHARED ${ONIONPIR_CORE_SRC} ${ONIONPIR_FFI_SRC})
+    else()
+        add_library(onionpir STATIC ${ONIONPIR_CORE_SRC} ${ONIONPIR_FFI_SRC})
+    endif()
     target_include_directories(onionpir PUBLIC ${ONIONPIR_PUBLIC_INCLUDES})
     if (USE_HEXL AND HEXL_FOUND)
         target_link_libraries(onionpir PUBLIC HEXL::hexl)
     endif()
-    # Position-independent code so the static lib can be linked into shared
-    # libraries (Java JNA loads a .so/.dylib; Rust crates also commonly do).
+    # PIC so the static lib can be linked into shared libraries downstream
+    # (Java JNA's .so/.dylib; Rust crates also commonly do).
     set_property(TARGET onionpir PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()

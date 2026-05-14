@@ -7,7 +7,10 @@
 
 # Build dirs
 /build-ffi/
+/build-shared/
 /wasm/build/
+/java/build/
+/java/lib/
 
 CMakeLists.txt.user
 CMakeCache.txt

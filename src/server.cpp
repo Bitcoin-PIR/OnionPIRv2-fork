@@ -816,7 +816,11 @@ PirServer::fast_expand_qry(std::size_t client_id, RlweCt &ciphertext) const {
                                 (pir_params_.get_num_dims() - 1); // u
   const size_t expan_height = pir_params_.get_expan_height(); // h
   const size_t capacity = size_t{1} << expan_height;          // 2^h
-  const auto &bv_galois_key = client_bv_galois_keys_.at(client_id);
+  // Source of truth: shared store if attached, else this server's own map.
+  if (shared_key_store_) shared_key_store_->touch(client_id);
+  const auto &bv_galois_key = shared_key_store_
+      ? shared_key_store_->get_galois_keys(client_id)
+      : client_bv_galois_keys_.at(client_id);
   constexpr size_t N = DBConsts::PolyDegree;
   const auto &qs = pir_params_.get_rns_mods();
   const size_t K = qs.size();
@@ -890,11 +894,19 @@ PirServer::fast_expand_qry(std::size_t client_id, RlweCt &ciphertext) const {
 }
 
 void PirServer::set_client_bv_galois_key(const size_t client_id, bvks::BvGaloisKeys bv_keys) {
-  client_bv_galois_keys_[client_id] = std::move(bv_keys);
+  if (shared_key_store_) {
+    shared_key_store_->set_galois_keys(client_id, std::move(bv_keys));
+  } else {
+    client_bv_galois_keys_[client_id] = std::move(bv_keys);
+  }
 }
 
 void PirServer::set_client_gsw_key(const size_t client_id, GSWCt gsw_key) {
-  client_gsw_keys_[client_id] = std::move(gsw_key);
+  if (shared_key_store_) {
+    shared_key_store_->set_gsw_key(client_id, std::move(gsw_key));
+  } else {
+    client_gsw_keys_[client_id] = std::move(gsw_key);
+  }
 }
 
 
@@ -930,7 +942,11 @@ RlweCt PirServer::make_query(const size_t client_id, RlweCt &query) {
         lwe_vector.push_back(query_vector[ptr]);
       }
       // Converting the BFV ciphertexts to GSW ciphertext by doing external product
-      key_gsw_.query_to_gsw(lwe_vector, client_gsw_keys_[client_id], gsw_vec[i - 1]);
+      // (client_gsw_keys_ when no shared store; SharedKeyStore::get_gsw_key when attached).
+      const GSWCt &gsw_for_client = shared_key_store_
+          ? shared_key_store_->get_gsw_key(client_id)
+          : client_gsw_keys_[client_id];
+      key_gsw_.query_to_gsw(lwe_vector, const_cast<GSWCt &>(gsw_for_client), gsw_vec[i - 1]);
     }
   }
   TIME_END(CONVERT_TIME);

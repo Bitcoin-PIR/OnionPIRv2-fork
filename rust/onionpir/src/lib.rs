@@ -57,6 +57,7 @@ pub struct ParamsInfo {
 
 type ClientHandle = *mut c_void;
 type ServerHandle = *mut c_void;
+type KeyStoreHandle = *mut c_void;
 
 #[link(name = "onionpir", kind = "static")]
 extern "C" {
@@ -95,6 +96,17 @@ extern "C" {
     fn onion_server_save_db(h: ServerHandle, path: *const i8) -> i32;
     fn onion_server_load_db(h: ServerHandle, path: *const i8) -> i32;
     fn onion_server_load_db_from_borrowed(h: ServerHandle, data: *const u8, len: usize) -> i32;
+
+    fn onion_key_store_new() -> KeyStoreHandle;
+    fn onion_key_store_free(h: KeyStoreHandle);
+    fn onion_key_store_set_galois_keys(h: KeyStoreHandle, client_id: u64,
+                                        data: *const u8, len: usize);
+    fn onion_key_store_set_gsw_key(h: KeyStoreHandle, client_id: u64,
+                                    data: *const u8, len: usize);
+    fn onion_key_store_has_client(h: KeyStoreHandle, client_id: u64) -> i32;
+    fn onion_key_store_remove(h: KeyStoreHandle, client_id: u64);
+    fn onion_key_store_size(h: KeyStoreHandle) -> u64;
+    fn onion_server_set_key_store(server: ServerHandle, store: KeyStoreHandle);
 }
 
 // ============================================================================
@@ -303,5 +315,92 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         unsafe { onion_server_free(self.h) };
+    }
+}
+
+// ============================================================================
+// SharedKeyStore — deserialize keys once, share across many Servers
+// ============================================================================
+
+/// A shared cache of deserialized client keys.
+///
+/// One store can back many [`Server`] instances. Attach with
+/// [`Server::set_key_store`]; once attached, the server's `set_galois_keys` /
+/// `set_gsw_key` calls forward into the store, and its query path looks up
+/// keys from the store. Internal LRU eviction caps the cache at 100 clients.
+///
+/// Lifetime: the store must outlive every attached server. The intended
+/// pattern is to wrap it in `std::sync::Arc<KeyStore>` and hold one Arc
+/// alongside each server.
+///
+/// Thread safety: the underlying C++ store is not internally synchronized.
+/// Callers must serialize key registration against query processing
+/// themselves (e.g. a `parking_lot::Mutex<()>` outside).
+pub struct KeyStore {
+    h: KeyStoreHandle,
+}
+
+unsafe impl Send for KeyStore {}
+unsafe impl Sync for KeyStore {}
+
+impl KeyStore {
+    pub fn new() -> Self {
+        let h = unsafe { onion_key_store_new() };
+        assert!(!h.is_null(), "onion_key_store_new returned null");
+        Self { h }
+    }
+
+    /// Raw FFI handle — exposed so `Server::set_key_store` can wire it up.
+    fn raw(&self) -> KeyStoreHandle { self.h }
+
+    /// Register a client's serialized BV galois keys. Evicts the LRU client
+    /// if the store is full.
+    pub fn set_galois_keys(&self, client_id: u64, data: &[u8]) {
+        unsafe { onion_key_store_set_galois_keys(self.h, client_id, data.as_ptr(), data.len()) };
+    }
+
+    /// Register a client's serialized GSW(s) key. Evicts the LRU client
+    /// if the store is full.
+    pub fn set_gsw_key(&self, client_id: u64, data: &[u8]) {
+        unsafe { onion_key_store_set_gsw_key(self.h, client_id, data.as_ptr(), data.len()) };
+    }
+
+    /// True if both key types are loaded for this client.
+    pub fn has_client(&self, client_id: u64) -> bool {
+        unsafe { onion_key_store_has_client(self.h, client_id) != 0 }
+    }
+
+    /// Remove a client's entries. No-op if absent.
+    pub fn remove(&self, client_id: u64) {
+        unsafe { onion_key_store_remove(self.h, client_id) };
+    }
+
+    /// Current number of cached clients (with ≥ 1 key registered).
+    pub fn size(&self) -> u64 {
+        unsafe { onion_key_store_size(self.h) }
+    }
+}
+
+impl Default for KeyStore {
+    fn default() -> Self { Self::new() }
+}
+
+impl Drop for KeyStore {
+    fn drop(&mut self) {
+        unsafe { onion_key_store_free(self.h) };
+    }
+}
+
+impl Server {
+    /// Attach a shared key store. After this call, `set_galois_keys` /
+    /// `set_gsw_key` forward into the store, and the query path looks keys
+    /// up from there. Pass `None` to detach.
+    ///
+    /// # Safety
+    /// The store must outlive this server. Hold onto an `Arc<KeyStore>`
+    /// alongside the server (or longer) to guarantee that.
+    pub unsafe fn set_key_store(&mut self, store: Option<&KeyStore>) {
+        let raw = store.map_or(std::ptr::null_mut(), |s| s.raw());
+        onion_server_set_key_store(self.h, raw);
     }
 }

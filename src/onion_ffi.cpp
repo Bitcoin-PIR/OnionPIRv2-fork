@@ -31,6 +31,7 @@
 #include "pir.h"
 #include "client.h"
 #include "server.h"
+#include "shared_key_store.h"
 #include "bv_keyswitch.h"
 #include "gsw.h"
 #include "rlwe.h"
@@ -516,6 +517,69 @@ extern "C" int onion_server_load_db_from_borrowed(OnionServerHandle h,
         return 0;
     }
 }
+
+// ─── SharedKeyStore ────────────────────────────────────────────────────────
+
+extern "C" OnionKeyStoreHandle onion_key_store_new(void) {
+    try {
+        return new SharedKeyStore();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void onion_key_store_free(OnionKeyStoreHandle h) {
+    delete static_cast<SharedKeyStore *>(h);
+}
+
+extern "C" void onion_key_store_set_galois_keys(OnionKeyStoreHandle h,
+                                                uint64_t client_id,
+                                                const uint8_t *data, size_t len) {
+    auto *store = static_cast<SharedKeyStore *>(h);
+    if (!store) return;
+    try {
+        bvks::BvGaloisKeys keys = deserialize_bv_galois_keys(data, len);
+        store->set_galois_keys(static_cast<size_t>(client_id), std::move(keys));
+    } catch (...) {}
+}
+
+extern "C" void onion_key_store_set_gsw_key(OnionKeyStoreHandle h,
+                                            uint64_t client_id,
+                                            const uint8_t *data, size_t len) {
+    auto *store = static_cast<SharedKeyStore *>(h);
+    if (!store) return;
+    try {
+        GSWCt gsw = deserialize_gsw_ct(data, len);
+        store->set_gsw_key(static_cast<size_t>(client_id), std::move(gsw));
+    } catch (...) {}
+}
+
+extern "C" int onion_key_store_has_client(OnionKeyStoreHandle h, uint64_t client_id) {
+    auto *store = static_cast<SharedKeyStore *>(h);
+    if (!store) return 0;
+    return store->has_client(static_cast<size_t>(client_id)) ? 1 : 0;
+}
+
+extern "C" void onion_key_store_remove(OnionKeyStoreHandle h, uint64_t client_id) {
+    auto *store = static_cast<SharedKeyStore *>(h);
+    if (!store) return;
+    store->remove(static_cast<size_t>(client_id));
+}
+
+extern "C" uint64_t onion_key_store_size(OnionKeyStoreHandle h) {
+    auto *store = static_cast<SharedKeyStore *>(h);
+    if (!store) return 0;
+    return static_cast<uint64_t>(store->size());
+}
+
+extern "C" void onion_server_set_key_store(OnionServerHandle server_h,
+                                           OnionKeyStoreHandle store_h) {
+    auto *s = static_cast<OnionPirServer_t *>(server_h);
+    if (!s) return;
+    s->inner.set_shared_key_store(static_cast<SharedKeyStore *>(store_h));
+}
+
+// ─── End SharedKeyStore ────────────────────────────────────────────────────
 
 extern "C" OnionBuf onion_server_answer_query(OnionServerHandle h, uint64_t client_id,
                                               const uint8_t *query, size_t query_len) {

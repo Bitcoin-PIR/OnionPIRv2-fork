@@ -4,6 +4,7 @@
 #include "pir.h"
 #include "bv_keyswitch.h"
 #include "aligned_allocator.h"
+#include "shared_key_store.h"
 #include <map>
 #include <sstream>
 #include <unordered_map>
@@ -59,6 +60,13 @@ public:
   void set_client_bv_galois_key(const size_t client_id, bvks::BvGaloisKeys bv_keys);
   void set_client_gsw_key(const size_t client_id, GSWCt gsw_key);
 
+  // Attach a non-owning SharedKeyStore. Once attached, set_client_*_key on
+  // this server forwards into the store and the query path looks keys up
+  // from the store instead of the server's own (now-empty) maps. Pass
+  // nullptr to detach. The store must outlive the server (and any other
+  // server attached to it).
+  void set_shared_key_store(SharedKeyStore *store) { shared_key_store_ = store; }
+
   /**
   Asking the server to return the original plaintext (before NTT transformation) at the given index.
   This is not doing PIR. So this reveals the index to the server. This is
@@ -90,6 +98,9 @@ private:
   size_t num_pt_;
   std::map<size_t, bvks::BvGaloisKeys> client_bv_galois_keys_;
   std::map<size_t, GSWCt> client_gsw_keys_;
+  // Non-owning. When non-null, set_client_*_key forwards to this store and
+  // the query-path lookup helpers below read from it. See set_shared_key_store.
+  SharedKeyStore *shared_key_store_ = nullptr;
   std::unordered_map<size_t, RlwePt> recorded_pts_; // pre-NTT plaintexts for test verification
   std::unique_ptr<db_coeff_t[], AlignedDeleter<db_coeff_t>> db_aligned_; // aligned database for fast first dim
   std::vector<inter_coeff_t> inter_res_; // intermediate result vector for fst dim

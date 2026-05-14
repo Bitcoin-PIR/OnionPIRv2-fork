@@ -47,6 +47,7 @@ set(ONIONPIR_CLIENT_SRC
     "${REPO_ROOT}/src/rlwe.cpp"
     "${REPO_ROOT}/src/utils.cpp"
     "${REPO_ROOT}/src/hexl_shim.cpp"      # scalar fallback (HEXL is x86-only)
+    "${REPO_ROOT}/src/shared_key_store.cpp"  # pulled in by server.h transitively
     "${REPO_ROOT}/src/onion_ffi.cpp"      # C ABI — bindings.cpp calls into it
 )
 

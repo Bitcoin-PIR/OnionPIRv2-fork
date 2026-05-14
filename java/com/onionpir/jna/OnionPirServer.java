@@ -116,6 +116,14 @@ public final class OnionPirServer implements AutoCloseable {
         return LIB.onion_server_load_db_from_borrowed(handle, data, data.length) != 0;
     }
 
+    /**
+     * Attach a shared key store. Forwards set/get galois/gsw calls into the
+     * store. Pass {@code null} to detach. The store must outlive this server.
+     */
+    public void setKeyStore(OnionKeyStore store) {
+        LIB.onion_server_set_key_store(handle, store == null ? null : store.raw());
+    }
+
     @Override
     public void close() {
         if (handle != null) {

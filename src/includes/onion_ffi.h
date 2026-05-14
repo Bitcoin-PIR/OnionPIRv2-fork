@@ -167,6 +167,38 @@ int onion_server_load_db(OnionServerHandle h, const char *path);
 int onion_server_load_db_from_borrowed(OnionServerHandle h,
                                        const uint8_t *data, size_t len);
 
+// ─── SharedKeyStore ────────────────────────────────────────────────────────
+// A single store of (deserialized) client galois + GSW keys, shared across
+// many servers. Bounded LRU (max 100 clients today). Attach with
+// onion_server_set_key_store; the store must outlive every attached server.
+
+typedef void *OnionKeyStoreHandle;
+
+OnionKeyStoreHandle onion_key_store_new(void);
+void                onion_key_store_free(OnionKeyStoreHandle h);
+
+// Register a client's serialized key blob (same wire format as
+// onion_server_set_galois_keys / onion_server_set_gsw_key).
+// May silently drop the LRU client to fit MAX_CLIENTS.
+void onion_key_store_set_galois_keys(OnionKeyStoreHandle h, uint64_t client_id,
+                                     const uint8_t *data, size_t len);
+void onion_key_store_set_gsw_key(OnionKeyStoreHandle h, uint64_t client_id,
+                                 const uint8_t *data, size_t len);
+
+// 1 if both key types are loaded for client_id, else 0.
+int  onion_key_store_has_client(OnionKeyStoreHandle h, uint64_t client_id);
+// Remove a client from the store. No-op if absent.
+void onion_key_store_remove(OnionKeyStoreHandle h, uint64_t client_id);
+// Number of cached clients (with at least one key registered).
+uint64_t onion_key_store_size(OnionKeyStoreHandle h);
+
+// Attach a store to a server. After this call, set_galois_keys /
+// set_gsw_key on the server forward into the store, and the query path
+// looks keys up from the store. Pass NULL for `store` to detach.
+// `store` must outlive `server`.
+void onion_server_set_key_store(OnionServerHandle server,
+                                OnionKeyStoreHandle store);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

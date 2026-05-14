@@ -69,4 +69,17 @@ public interface OnionPirLibrary extends Library {
     int onion_server_save_db(Pointer h, String path);
     int onion_server_load_db(Pointer h, String path);
     int onion_server_load_db_from_borrowed(Pointer h, byte[] data, long len);
+
+    // ── SharedKeyStore ───────────────────────────────────────────────────
+
+    Pointer onion_key_store_new();
+    void    onion_key_store_free(Pointer h);
+    void    onion_key_store_set_galois_keys(Pointer h, long client_id,
+                                            byte[] data, long len);
+    void    onion_key_store_set_gsw_key(Pointer h, long client_id,
+                                        byte[] data, long len);
+    int     onion_key_store_has_client(Pointer h, long client_id);
+    void    onion_key_store_remove(Pointer h, long client_id);
+    long    onion_key_store_size(Pointer h);
+    void    onion_server_set_key_store(Pointer server, Pointer store);
 }

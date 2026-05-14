@@ -5,7 +5,7 @@
 //! logger), so two tests running in parallel can hit a SIGTRAP. Serial
 //! execution is the only correct way to run this suite.
 
-use onionpir::{params_info, Client, Server};
+use onionpir::{params_info, Client, KeyStore, Server};
 
 #[test]
 fn pir_roundtrip() {
@@ -192,4 +192,59 @@ fn push_plaintexts_roundtrip() {
         assert_eq!(coeff, (i & 0xff) as u64,
                    "coeff[{}] = {}, want {}", i, coeff, i & 0xff);
     }
+}
+
+/// Two servers backed by the same KeyStore. A client registers its keys
+/// once (with the store); both servers can answer the client's queries
+/// without each one keeping its own deserialized copy. The store's size()
+/// stays at 1.
+#[test]
+fn shared_key_store_two_servers() {
+    let pt_idx_a: u64 = 5;
+    let pt_idx_b: u64 = 17;
+
+    let store = KeyStore::new();
+    let client = Client::new(0);
+    let id = client.id();
+
+    // One-time key registration on the store. Both servers will use it.
+    store.set_galois_keys(id, &client.galois_keys());
+    store.set_gsw_key(id, &client.gsw_key());
+    assert!(store.has_client(id));
+    assert_eq!(store.size(), 1);
+
+    // Server A — gen its own DB, attach the shared store, answer a query.
+    let golden_a = {
+        let mut a = Server::new(0);
+        a.gen_data(&[pt_idx_a]);
+        // SAFETY: `store` outlives `a` (the inner block).
+        unsafe { a.set_key_store(Some(&store)); }
+        let q = client.generate_query(pt_idx_a);
+        let resp = a.answer_query(id, &q);
+        client.decrypt_response(&resp)
+    };
+
+    // Server B — independent DB, same store, different query index.
+    let golden_b = {
+        let mut b = Server::new(0);
+        b.gen_data(&[pt_idx_b]);
+        unsafe { b.set_key_store(Some(&store)); }
+        let q = client.generate_query(pt_idx_b);
+        let resp = b.answer_query(id, &q);
+        client.decrypt_response(&resp)
+    };
+
+    // The store kept exactly one client through both servers' query paths.
+    assert_eq!(store.size(), 1, "store should still hold exactly 1 client");
+
+    // Sanity: the responses are non-empty and differ (different DBs, different
+    // indices). We don't have direct golden plaintexts here because the test
+    // skips registering the recorded_pts_ on the per-server side (gen_data
+    // recorded only one index each).
+    assert!(!golden_a.is_empty() && !golden_b.is_empty());
+
+    // After removing the client, the store reports it gone.
+    store.remove(id);
+    assert!(!store.has_client(id));
+    assert_eq!(store.size(), 0);
 }

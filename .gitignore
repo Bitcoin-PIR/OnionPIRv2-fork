@@ -1,3 +1,13 @@
+# Rust
+/target/
+/Cargo.lock
+
+# Reference copy of the pre-port fork tree; kept out of the new branch
+/_fork_legacy/
+
+# Build dirs
+/build-ffi/
+
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles

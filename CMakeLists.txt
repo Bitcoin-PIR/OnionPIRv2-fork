@@ -94,22 +94,47 @@ if (DEFINED ACTIVE_CONFIG)
 endif()
 
 
-# Automatically find all source files in src/, but exclude the HEXL shim TU
-# when the real HEXL is being used (the shim has the same symbols, would conflict).
-file(GLOB_RECURSE SRC_FILES src/*.cpp)
-if (USE_HEXL)
-    list(REMOVE_ITEM SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/hexl_shim.cpp")
-endif()
-add_executable(Onion-PIR ${SRC_FILES})
-
-# Include directories: source headers always, plus the hexl_compat shim dir
-# (which contains hexl/hexl.hpp) only when real HEXL is not on the path.
-target_include_directories(Onion-PIR PUBLIC src/includes)
+# Source layout split for the two build targets:
+#   ONIONPIR_CORE_SRC  = library-eligible sources (PIR engine + scalar HEXL shim
+#                        if applicable). Excludes main.cpp / test scaffolding.
+#   ONIONPIR_FFI_SRC   = C-ABI wrapper for Rust / Java consumers.
+#   ONIONPIR_BIN_SRC   = additional sources for the Onion-PIR executable
+#                        (main.cpp and the in-tree test harness under src/tests/).
+file(GLOB ONIONPIR_CORE_SRC
+    src/bv_keyswitch.cpp src/client.cpp src/gsw.cpp src/logging.cpp
+    src/matrix.cpp src/pir.cpp src/rlwe.cpp src/server.cpp src/utils.cpp
+)
 if (NOT USE_HEXL)
-    target_include_directories(Onion-PIR PUBLIC src/hexl_compat)
+    list(APPEND ONIONPIR_CORE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/hexl_shim.cpp")
 endif()
 
-# Link HEXL if enabled
+file(GLOB ONIONPIR_BIN_SRC src/main.cpp src/tests/*.cpp)
+set(ONIONPIR_FFI_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/onion_ffi.cpp")
+
+# Common include dirs reused by all targets below.
+set(ONIONPIR_PUBLIC_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src/includes")
+if (NOT USE_HEXL)
+    list(APPEND ONIONPIR_PUBLIC_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src/hexl_compat")
+endif()
+
+# Executable target (Onion-PIR): core engine + test harness + main.
+add_executable(Onion-PIR ${ONIONPIR_CORE_SRC} ${ONIONPIR_BIN_SRC})
+target_include_directories(Onion-PIR PUBLIC ${ONIONPIR_PUBLIC_INCLUDES})
 if (USE_HEXL AND HEXL_FOUND)
     target_link_libraries(Onion-PIR PUBLIC HEXL::hexl)
+endif()
+
+# Static library target (onionpir): core engine + C ABI, for Rust / Java FFI
+# consumers. Disabled by default since the headline executable doesn't need it;
+# Rust's build.rs flips this on with -DONIONPIR_BUILD_FFI=ON.
+option(ONIONPIR_BUILD_FFI "Build the onionpir static library with C ABI" OFF)
+if (ONIONPIR_BUILD_FFI)
+    add_library(onionpir STATIC ${ONIONPIR_CORE_SRC} ${ONIONPIR_FFI_SRC})
+    target_include_directories(onionpir PUBLIC ${ONIONPIR_PUBLIC_INCLUDES})
+    if (USE_HEXL AND HEXL_FOUND)
+        target_link_libraries(onionpir PUBLIC HEXL::hexl)
+    endif()
+    # Position-independent code so the static lib can be linked into shared
+    # libraries (Java JNA loads a .so/.dylib; Rust crates also commonly do).
+    set_property(TARGET onionpir PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()

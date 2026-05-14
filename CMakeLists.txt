@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 
+# CMake 4.x compat: some bundled deps (e.g. older HEXL) still set 3.5-era policy
+# defaults. Allow them to keep building under newer cmake.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # Set build type to Benchmark if not specified
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Benchmark)
@@ -23,34 +27,51 @@ if (CMAKE_BUILD_TYPE MATCHES Debug)
 endif()
 
 
-# Option to enable Intel HEXL optimizations. Default is ON.
-option(USE_HEXL "Enable Intel HEXL optimizations" ON)
+# Intel HEXL is x86_64-only. Default ON for x86_64, OFF elsewhere (ARM, WASM).
+# When OFF, the build uses a scalar shim under src/hexl_compat/ that mimics
+# HEXL's API surface (NTT, Eltwise*, MinimalPrimitiveRoot) — see src/hexl_shim.cpp.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
+    set(_USE_HEXL_DEFAULT ON)
+else()
+    set(_USE_HEXL_DEFAULT OFF)
+endif()
+option(USE_HEXL "Enable Intel HEXL optimizations (x86_64 only)" ${_USE_HEXL_DEFAULT})
+
 if (USE_HEXL)
     message(STATUS "HEXL support enabled.")
     add_compile_definitions(ONIONPIR_USE_HEXL)
-    
-    # Set HEXL installation path
-    set(HEXL_DIR "/u/yuec12/OnionPIRv2/hexl_install/lib64/cmake/hexl-1.2.6")
-    
-    # Find HEXL package
+
+    # HEXL_DIR can be overridden on the cmake line: -DHEXL_DIR=/path/to/cmake/hexl-1.2.6
+    if (NOT HEXL_DIR)
+        set(HEXL_DIR "/u/yuec12/OnionPIRv2/hexl_install/lib64/cmake/hexl-1.2.6")
+    endif()
+
     find_package(HEXL REQUIRED)
     if(HEXL_FOUND)
         message(STATUS "HEXL found at: ${HEXL_DIR}")
     else()
-        message(FATAL_ERROR "HEXL not found. Please install HEXL or disable USE_HEXL option.")
+        message(FATAL_ERROR "HEXL not found. Set -DHEXL_DIR=<path>, or pass -DUSE_HEXL=OFF to use the scalar fallback.")
     endif()
 else()
-    message(STATUS "HEXL support disabled.")
+    message(STATUS "HEXL support disabled — using scalar shim at src/hexl_compat/.")
 endif()
 
 
-option(NOAVX512 "Disable AVX-512" OFF)
+# AVX-512 detection: -march=native already strips AVX-512 on CPUs that lack it,
+# but some compilers (or older HEXL probes) still emit AVX-512 codegen unless
+# explicitly disabled. Default NOAVX512=ON on non-x86 to avoid SIGILL on fresh
+# clones; users on AVX-512 hosts can flip it off.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
+    option(NOAVX512 "Disable AVX-512" OFF)
+else()
+    option(NOAVX512 "Disable AVX-512" ON)
+endif()
 option(NOAVX2 "Disable AVX2" OFF)
-if (NOAVX512)
+if (NOAVX512 AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
     message("Disabling AVX-512")
     add_compile_options(-mno-avx512f)
 endif()
-if (NOAVX2)
+if (NOAVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
     message("Disabling AVX2")
     add_compile_options(-mno-avx2)
 endif()
@@ -73,14 +94,22 @@ if (DEFINED ACTIVE_CONFIG)
 endif()
 
 
-# Automatically find all source files in src/
+# Automatically find all source files in src/, but exclude the HEXL shim TU
+# when the real HEXL is being used (the shim has the same symbols, would conflict).
 file(GLOB_RECURSE SRC_FILES src/*.cpp)
+if (USE_HEXL)
+    list(REMOVE_ITEM SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/hexl_shim.cpp")
+endif()
 add_executable(Onion-PIR ${SRC_FILES})
+
+# Include directories: source headers always, plus the hexl_compat shim dir
+# (which contains hexl/hexl.hpp) only when real HEXL is not on the path.
+target_include_directories(Onion-PIR PUBLIC src/includes)
+if (NOT USE_HEXL)
+    target_include_directories(Onion-PIR PUBLIC src/hexl_compat)
+endif()
 
 # Link HEXL if enabled
 if (USE_HEXL AND HEXL_FOUND)
     target_link_libraries(Onion-PIR PUBLIC HEXL::hexl)
 endif()
-
-# Include directories
-target_include_directories(Onion-PIR PUBLIC src/includes)

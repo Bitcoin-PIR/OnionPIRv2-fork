@@ -1,20 +1,30 @@
 // src/hexl_shim.cpp
 //
-// Scalar fallback implementation of the tiny subset of Intel HEXL that this
-// codebase uses. Built only when HEXL is unavailable (ARM / WASM); on x86_64
-// with HEXL enabled, the real library is used instead and this file is not
-// compiled.
+// Scalar + (ARM) NEON fallback implementation of the tiny subset of Intel HEXL
+// that this codebase uses. Built only when HEXL is unavailable (ARM / WASM); on
+// x86_64 with HEXL enabled, the real library is used instead and this file is
+// not compiled.
 //
 // See hexl_compat/hexl/hexl.hpp for the public API and rationale.
 //
 // Negacyclic NTT in R_q = Z_q[x] / (x^N + 1):
 //   - Iterative Cooley-Tukey radix-2 butterfly.
 //   - Twiddles psi^{bit_reverse(k, log2 N)} precomputed in the ctor.
+//   - Twiddle butterflies use Shoup modular multiplication: alongside each
+//     twiddle w we cache w_shoup = floor(w * 2^64 / q) and reduce a*w to
+//     [0, q) with a single uint64x2 -> uint128 multiply (no division). This
+//     replaces the previous `(__uint128_t)a*w % q` and is the main scalar
+//     speedup on the hot path.
 //   - Forward produces bit-reversed output; inverse consumes bit-reversed
 //     input and produces natural order (matching HEXL's convention for the
 //     codebase: a single forward followed by elementwise ops followed by a
 //     single inverse round-trips an array, with the bit-reversed permutation
 //     cancelling out).
+//
+// EltwiseAddMod / EltwiseSubMod are vectorised with NEON on AArch64. The mul
+// paths (EltwiseMultMod, EltwiseFMAMod) remain scalar — a 64x64->128 SIMD
+// multiply doesn't exist on AArch64 and the split-mul rewrite isn't worth the
+// complexity at this scale.
 
 #include "hexl/hexl.hpp"
 
@@ -22,6 +32,13 @@
 #include <cstddef>
 #include <stdexcept>
 #include <vector>
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define ONIONPIR_HEXL_SHIM_HAS_NEON 1
+#else
+#define ONIONPIR_HEXL_SHIM_HAS_NEON 0
+#endif
 
 namespace intel {
 namespace hexl {
@@ -49,6 +66,33 @@ inline std::uint64_t mulmod(std::uint64_t a, std::uint64_t b,
   return static_cast<std::uint64_t>(
       (static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b)) %
       q);
+}
+
+// Shoup precompute: w_shoup = floor(w * 2^64 / q). Requires w < q < 2^63.
+inline std::uint64_t shoup_precompute(std::uint64_t w, std::uint64_t q) {
+  // (w << 64) / q via __uint128_t. w < q so the quotient fits in 64 bits.
+  return static_cast<std::uint64_t>(
+      (static_cast<unsigned __int128>(w) << 64) /
+      static_cast<unsigned __int128>(q));
+}
+
+// Shoup modular multiplication: returns a*w mod q in [0, q).
+//   q_hat = (a * w_shoup) >> 64   (high 64 bits of the 128-bit product)
+//   r     = a*w - q_hat * q       (computed mod 2^64; in [0, 2q) by the bound)
+//   r    -= (r >= q) * q          (conditional subtract)
+// Correct whenever a, w < q and q < 2^63. Here q < 2^62 so the bound is
+// comfortable.
+inline std::uint64_t mul_shoup(std::uint64_t a, std::uint64_t w,
+                               std::uint64_t w_shoup, std::uint64_t q) {
+  const std::uint64_t q_hat = static_cast<std::uint64_t>(
+      (static_cast<unsigned __int128>(a) *
+       static_cast<unsigned __int128>(w_shoup)) >>
+      64);
+  // Multiplication wraps mod 2^64; the algebra makes the result fit in
+  // [0, 2q), which is < 2^63 so the unsigned subtraction is well-defined.
+  std::uint64_t r = a * w - q_hat * q;
+  if (r >= q) r -= q;
+  return r;
 }
 
 inline std::uint64_t reduce(std::uint64_t a, std::uint64_t q) {
@@ -103,14 +147,48 @@ std::vector<std::uint64_t> prime_factors(std::uint64_t m) {
 
 void EltwiseAddMod(std::uint64_t *out, const std::uint64_t *a,
                    const std::uint64_t *b, std::uint64_t n, std::uint64_t q) {
-  for (std::uint64_t i = 0; i < n; ++i) {
+  std::uint64_t i = 0;
+#if ONIONPIR_HEXL_SHIM_HAS_NEON
+  // Inputs are guaranteed in [0, q) (callers pre-reduce). q < 2^62, so the
+  // sum fits in uint64. A single conditional subtract suffices.
+  //
+  // Vector pattern per 2-element block:
+  //   sum  = a + b
+  //   mask = (sum >= q) ? all-ones : all-zeros   (vcgeq_u64)
+  //   out  = sum - (mask & q)
+  const uint64x2_t q_vec = vdupq_n_u64(q);
+  for (; i + 2 <= n; i += 2) {
+    const uint64x2_t av = vld1q_u64(a + i);
+    const uint64x2_t bv = vld1q_u64(b + i);
+    const uint64x2_t sum = vaddq_u64(av, bv);
+    const uint64x2_t mask = vcgeq_u64(sum, q_vec);  // 0xFF.. when sum >= q
+    const uint64x2_t corr = vandq_u64(mask, q_vec);
+    vst1q_u64(out + i, vsubq_u64(sum, corr));
+  }
+#endif
+  for (; i < n; ++i) {
     out[i] = addmod(a[i], b[i], q);
   }
 }
 
 void EltwiseSubMod(std::uint64_t *out, const std::uint64_t *a,
                    const std::uint64_t *b, std::uint64_t n, std::uint64_t q) {
-  for (std::uint64_t i = 0; i < n; ++i) {
+  std::uint64_t i = 0;
+#if ONIONPIR_HEXL_SHIM_HAS_NEON
+  // diff = a - b (mod 2^64). If b > a we underflowed; correct by adding q.
+  //   borrow = (b > a) ? all-ones : 0    (vcgtq_u64)
+  //   out    = diff + (borrow & q)
+  const uint64x2_t q_vec = vdupq_n_u64(q);
+  for (; i + 2 <= n; i += 2) {
+    const uint64x2_t av = vld1q_u64(a + i);
+    const uint64x2_t bv = vld1q_u64(b + i);
+    const uint64x2_t diff = vsubq_u64(av, bv);
+    const uint64x2_t borrow = vcgtq_u64(bv, av);  // 0xFF.. when b > a
+    const uint64x2_t corr = vandq_u64(borrow, q_vec);
+    vst1q_u64(out + i, vaddq_u64(diff, corr));
+  }
+#endif
+  for (; i < n; ++i) {
     out[i] = submod(a[i], b[i], q);
   }
 }
@@ -118,6 +196,8 @@ void EltwiseSubMod(std::uint64_t *out, const std::uint64_t *a,
 void EltwiseMultMod(std::uint64_t *out, const std::uint64_t *a,
                     const std::uint64_t *b, std::uint64_t n, std::uint64_t q,
                     std::uint64_t /*in_mod_factor*/) {
+  // No NEON path: AArch64 lacks a 64x64->128 SIMD multiply. A split-and-fold
+  // implementation is possible but not worth the complexity at this site.
   for (std::uint64_t i = 0; i < n; ++i) {
     out[i] = mulmod(a[i], b[i], q);
   }
@@ -129,6 +209,9 @@ void EltwiseFMAMod(std::uint64_t *out, const std::uint64_t *a,
                    std::uint64_t /*in_mod_factor*/) {
   // Reduce scalar once (callers usually pre-reduce, but be safe).
   scalar = reduce(scalar, q);
+  // Scalar `scalar` is constant across the loop — we could Shoup-precompute
+  // it here. Profile says this path is not hot in OnionPIR, so we stay
+  // scalar for simplicity.
   if (acc != nullptr) {
     for (std::uint64_t i = 0; i < n; ++i) {
       const std::uint64_t prod = mulmod(a[i], scalar, q);
@@ -259,6 +342,8 @@ NTT::NTT(std::size_t N, std::uint64_t q, std::uint64_t root) {
   const unsigned bits = log2_pow2(N_);
   psi_fwd_.resize(N_);
   psi_inv_.resize(N_);
+  psi_fwd_shoup_.resize(N_);
+  psi_inv_shoup_.resize(N_);
 
   // Build powers of root (in natural index k) then permute.
   // Naive: psi_fwd_[k] = root^{bit_reverse(k)}. We compute by iterative
@@ -275,6 +360,8 @@ NTT::NTT(std::size_t N, std::uint64_t q, std::uint64_t root) {
     const std::uint64_t br = bit_reverse(k, bits);
     psi_fwd_[k] = pow_fwd[br];
     psi_inv_[k] = pow_inv[br];
+    psi_fwd_shoup_[k] = shoup_precompute(psi_fwd_[k], q_);
+    psi_inv_shoup_[k] = shoup_precompute(psi_inv_[k], q_);
   }
 }
 
@@ -292,14 +379,19 @@ void NTT::ComputeForward(std::uint64_t *out, const std::uint64_t *in,
   // Stage variables:
   //   m  = number of blocks at this stage (starts at 1, doubles each stage)
   //   t  = butterfly distance (N/2 initially, halves each stage)
-  // For each block i in [0, m): twiddle w = psi_fwd_[m + i].
+  // For each block i in [0, m): twiddle w = psi_fwd_[m + i] with Shoup
+  // precompute w_shoup = psi_fwd_shoup_[m + i].
   // For each j in [block_start, block_start + t):
-  //   u = out[j], v = out[j + t] * w
-  //   out[j]     = u + v
-  //   out[j + t] = u - v
+  //   u = out[j], v = mul_shoup(out[j + t], w, w_shoup, q)
+  //   out[j]     = u + v   (mod q)
+  //   out[j + t] = u - v   (mod q)
   // This matches the SEAL / HEXL convention where psi_fwd_[k] holds
   // root^{bit_reverse_log2N(k)}; the first butterfly stage thus uses
   // psi_fwd_[1] = root^{N/2}, the negacyclic "root of -1".
+  //
+  // NEON-vectorising the inner butterfly itself is future work: it requires
+  // a 64x64->128 split-multiply on AArch64 (no native instruction), and the
+  // add/sub-only vectorisation buys little when the multiply stays scalar.
   std::size_t t = N_;
   for (std::size_t m = 1; m < N_; m <<= 1) {
     t >>= 1;
@@ -307,9 +399,10 @@ void NTT::ComputeForward(std::uint64_t *out, const std::uint64_t *in,
       const std::size_t j1 = 2 * i * t;
       const std::size_t j2 = j1 + t;
       const std::uint64_t w = psi_fwd_[m + i];
+      const std::uint64_t w_shoup = psi_fwd_shoup_[m + i];
       for (std::size_t j = j1; j < j2; ++j) {
         const std::uint64_t u = out[j];
-        const std::uint64_t v = mulmod(out[j + t], w, q_);
+        const std::uint64_t v = mul_shoup(out[j + t], w, w_shoup, q_);
         out[j]     = addmod(u, v, q_);
         out[j + t] = submod(u, v, q_);
       }
@@ -332,9 +425,9 @@ void NTT::ComputeInverse(std::uint64_t *out, const std::uint64_t *in,
   //   for each block:
   //     u = out[i + j]
   //     v = out[i + j + t]
-  //     out[i + j]     = u + v
-  //     out[i + j + t] = (u - v) * w
-  // where w = psi_inv_[m + i], block index i in [0, m), m halves each stage.
+  //     out[i + j]     = u + v                                  (mod q)
+  //     out[i + j + t] = mul_shoup(u - v, w, w_shoup, q)        (mod q)
+  // where w = psi_inv_[m + i], w_shoup = psi_inv_shoup_[m + i].
   std::size_t t = 1;
   for (std::size_t m = N_; m > 1; m >>= 1) {
     const std::size_t half = m >> 1;
@@ -342,11 +435,12 @@ void NTT::ComputeInverse(std::uint64_t *out, const std::uint64_t *in,
       const std::size_t j1 = 2 * i * t;
       const std::size_t j2 = j1 + t;
       const std::uint64_t w = psi_inv_[half + i];
+      const std::uint64_t w_shoup = psi_inv_shoup_[half + i];
       for (std::size_t j = j1; j < j2; ++j) {
         const std::uint64_t u = out[j];
         const std::uint64_t v = out[j + t];
         out[j]     = addmod(u, v, q_);
-        out[j + t] = mulmod(submod(u, v, q_), w, q_);
+        out[j + t] = mul_shoup(submod(u, v, q_), w, w_shoup, q_);
       }
     }
     t <<= 1;
@@ -354,6 +448,8 @@ void NTT::ComputeInverse(std::uint64_t *out, const std::uint64_t *in,
 
   // Multiply by N^{-1} mod q after the butterflies (correctness invariant
   // called out by the spec: the scaling must come AFTER the butterflies).
+  // This is O(N) — staying with the existing scalar mulmod is fine; the
+  // hot O(N log N) path is the Shoup-accelerated butterfly above.
   for (std::size_t i = 0; i < N_; ++i) {
     out[i] = mulmod(out[i], inv_N_, q_);
   }

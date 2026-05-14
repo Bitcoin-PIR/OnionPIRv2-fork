@@ -71,6 +71,11 @@ class NTT {
   std::vector<std::uint64_t> psi_fwd_;
   // Inverse twiddles: psi_inv_[k] = inv_root^{bit_reverse(k, log2 N)} mod q.
   std::vector<std::uint64_t> psi_inv_;
+  // Shoup precomputes for each twiddle: w_shoup = floor(w * 2^64 / q). Used
+  // by the NTT butterfly so the per-element mod-mul costs a single widening
+  // multiply (plus a conditional subtract) instead of a uint128 division.
+  std::vector<std::uint64_t> psi_fwd_shoup_;
+  std::vector<std::uint64_t> psi_inv_shoup_;
 };
 
 // Element-wise: out[i] = (a[i] + b[i]) mod q.

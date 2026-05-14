@@ -103,3 +103,40 @@ fn db_save_load_roundtrip() {
 
     let _ = std::fs::remove_file(&tmp_path);
 }
+
+/// Export a client's secret key, drop the client, reconstruct from the
+/// exported bytes (with the same id), and verify the reconstructed client
+/// answers queries identically. The server keeps the original key
+/// registration; the restored client must match the same identity.
+#[test]
+fn client_secret_key_roundtrip() {
+    let pt_idx: u64 = 33;
+    let mut server = Server::new(0);
+    server.gen_data(&[pt_idx]);
+
+    // Step 1: register the original client's keys on the server, query, drop.
+    let (original_id, sk_bytes, golden) = {
+        let c = Client::new(0);
+        let id = c.id();
+        let sk = c.export_secret_key();
+        assert!(!sk.is_empty(), "exported sk should be non-empty");
+        server.set_galois_keys(id, &c.galois_keys());
+        server.set_gsw_key(id, &c.gsw_key());
+        let q = c.generate_query(pt_idx);
+        let resp = server.answer_query(id, &q);
+        let pt = c.decrypt_response(&resp);
+        (id, sk, pt)
+    }; // original client dropped here
+
+    // Step 2: rebuild a client from the exported sk and the same id. The
+    // server's registered galois/gsw keys still resolve under `original_id`.
+    let restored = Client::from_secret_key(0, original_id, &sk_bytes)
+        .expect("from_secret_key must accept its own exported bytes");
+    assert_eq!(restored.id(), original_id, "id must round-trip");
+
+    let q = restored.generate_query(pt_idx);
+    let resp = server.answer_query(restored.id(), &q);
+    let pt = restored.decrypt_response(&resp);
+    assert_eq!(pt, golden,
+               "restored client did not reproduce the original plaintext");
+}

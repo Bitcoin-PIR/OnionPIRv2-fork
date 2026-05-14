@@ -38,6 +38,29 @@ public final class OnionPirClient implements AutoCloseable {
         }
     }
 
+    private OnionPirClient(Pointer h) { handle = h; }
+
+    /**
+     * Reconstruct a client from a previously-exported secret key. The
+     * {@code clientId} must match the id the server already knows.
+     * Returns {@code null} on size / format mismatch.
+     */
+    public static OnionPirClient fromSecretKey(long numEntries, long clientId,
+                                                byte[] secretKey) {
+        Pointer h = LIB.onion_client_new_from_sk(
+                numEntries, clientId, secretKey, secretKey.length);
+        return (h == null) ? null : new OnionPirClient(h);
+    }
+
+    /**
+     * Serialized secret key. Pair with
+     * {@link #fromSecretKey(long, long, byte[])} to persist this client across
+     * processes. Treat the bytes as sensitive.
+     */
+    public byte[] exportSecretKey() {
+        return OnionPir.bufToBytes(LIB.onion_client_export_secret_key(handle));
+    }
+
     /** Auto-assigned client id. */
     public long id() {
         return LIB.onion_client_id(handle);

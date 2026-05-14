@@ -20,6 +20,11 @@ PirClient::PirClient(const PirParams &pir_params)
       rng_(std::random_device{}()),
       rlwe_sk_(make_client_sk(pir_params, rng_)) {}
 
+PirClient::PirClient(const PirParams &pir_params, size_t client_id, RlweSk sk)
+    : client_id_(client_id), pir_params_(pir_params),
+      rng_(std::random_device{}()),
+      rlwe_sk_(std::move(sk)) {}
+
 GSWCt PirClient::generate_gsw_from_key() {
   constexpr size_t N = DBConsts::PolyDegree;
 

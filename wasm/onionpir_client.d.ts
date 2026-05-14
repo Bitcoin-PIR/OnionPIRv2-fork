@@ -41,6 +41,13 @@ export interface OnionPirClient {
      */
     decryptResponse(response: Uint8Array): Uint8Array;
 
+    /**
+     * Export this client's secret key. Treat as sensitive — these bytes
+     * fully recover the client's identity. Pair with `createClientFromSecretKey`
+     * to persist a client across page loads.
+     */
+    exportSecretKey(): Uint8Array;
+
     /** Free the underlying C++ object. Call when done. */
     delete(): void;
 }
@@ -55,6 +62,15 @@ export interface OnionPirModule {
 
     /** PIR client class. */
     OnionPirClient: OnionPirClientConstructor;
+
+    /**
+     * Reconstruct a client from a previously-exported secret key and the id
+     * the server already knows. Returns `null` on size / format mismatch.
+     */
+    createClientFromSecretKey(
+        clientId: number,
+        secretKey: Uint8Array,
+    ): OnionPirClient | null;
 
     // ----- Application helpers (Bitcoin-PIR cuckoo plumbing) -----
 

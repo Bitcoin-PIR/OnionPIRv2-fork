@@ -39,6 +39,10 @@ public interface OnionPirLibrary extends Library {
     void    onion_client_free(Pointer h);
     long    onion_client_id(Pointer h);
 
+    Pointer onion_client_new_from_sk(long num_entries, long client_id,
+                                     byte[] sk_data, long sk_len);
+    OnionBuf.ByValue onion_client_export_secret_key(Pointer h);
+
     OnionBuf.ByValue onion_client_galois_keys(Pointer h);
     OnionBuf.ByValue onion_client_gsw_key(Pointer h);
     OnionBuf.ByValue onion_client_generate_query(Pointer h, long pt_idx);

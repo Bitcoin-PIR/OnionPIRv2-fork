@@ -9,7 +9,15 @@
 class PirClient {
 public:
   PirClient(const PirParams &pirparms);
+  // Reconstruct a client from a previously-exported secret key (see
+  // get_secret_key). The client_id should match what the server saw,
+  // so previously-registered galois/gsw keys still resolve.
+  PirClient(const PirParams &pirparms, size_t client_id, RlweSk sk);
   ~PirClient() = default;
+
+  // Borrow the underlying ternary secret key (NTT form, all K limbs).
+  // Pair with the from-sk constructor to persist a client across processes.
+  const RlweSk &get_secret_key() const { return rlwe_sk_; }
 
   /**
   Generate a packed query ciphertext for fast_expand_qry.

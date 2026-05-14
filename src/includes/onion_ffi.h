@@ -72,6 +72,19 @@ OnionClientHandle onion_client_new(uint64_t num_entries);
 void              onion_client_free(OnionClientHandle h);
 uint64_t          onion_client_id(OnionClientHandle h);
 
+// Reconstruct a client from a previously-exported secret key. `client_id`
+// should match the id the server already knows (so its galois / gsw key
+// registration still resolves). Returns NULL on size / format mismatch.
+OnionClientHandle onion_client_new_from_sk(uint64_t num_entries,
+                                           uint64_t client_id,
+                                           const uint8_t *sk_data,
+                                           size_t sk_len);
+
+// Serialized secret key. Wire format: [u32 word_count_LE][u64 sk_words[…]].
+// Caller frees with onion_free_buf. Treat the bytes as sensitive — they
+// fully recover the client's identity.
+OnionBuf onion_client_export_secret_key(OnionClientHandle h);
+
 // Serialized BV galois keys for this client. Caller frees.
 OnionBuf onion_client_galois_keys(OnionClientHandle h);
 

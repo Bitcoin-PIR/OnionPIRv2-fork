@@ -67,6 +67,9 @@ extern "C" {
     fn onion_client_new(num_entries: u64) -> ClientHandle;
     fn onion_client_free(h: ClientHandle);
     fn onion_client_id(h: ClientHandle) -> u64;
+    fn onion_client_new_from_sk(num_entries: u64, client_id: u64,
+                                sk_data: *const u8, sk_len: usize) -> ClientHandle;
+    fn onion_client_export_secret_key(h: ClientHandle) -> COnionBuf;
     fn onion_client_galois_keys(h: ClientHandle) -> COnionBuf;
     fn onion_client_gsw_key(h: ClientHandle) -> COnionBuf;
     fn onion_client_generate_query(h: ClientHandle, pt_idx: u64) -> COnionBuf;
@@ -140,6 +143,20 @@ impl Client {
         let h = unsafe { onion_client_new(num_entries) };
         assert!(!h.is_null(), "onion_client_new returned null");
         Self { h }
+    }
+
+    /// Reconstruct a client from a previously-exported secret key plus the
+    /// id the server already knows. Returns `None` on size / format mismatch.
+    pub fn from_secret_key(num_entries: u64, client_id: u64, sk: &[u8]) -> Option<Self> {
+        let h = unsafe { onion_client_new_from_sk(num_entries, client_id, sk.as_ptr(), sk.len()) };
+        if h.is_null() { None } else { Some(Self { h }) }
+    }
+
+    /// Serialized secret key. Pair with `Client::from_secret_key` to restore
+    /// this client in another process. The bytes are sensitive — they fully
+    /// recover the client's identity.
+    pub fn export_secret_key(&self) -> Vec<u8> {
+        buf_to_vec(unsafe { onion_client_export_secret_key(self.h) })
     }
 
     /// The client's auto-assigned id. Pair with `Server::set_*` calls on the

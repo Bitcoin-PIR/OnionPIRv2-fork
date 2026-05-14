@@ -201,6 +201,21 @@ void serialize_plaintext(const RlwePt &pt, std::vector<uint8_t> &out) {
     w.u64_array(pt.data.data(), pt.data.size());
 }
 
+void serialize_secret_key(const RlweSk &sk, std::vector<uint8_t> &out) {
+    Writer w(out);
+    w.u32(static_cast<uint32_t>(sk.data.size()));
+    w.u64_array(sk.data.data(), sk.data.size());
+}
+
+RlweSk deserialize_secret_key(const uint8_t *data, size_t len) {
+    Reader r(data, len);
+    const uint32_t n = r.u32();
+    RlweSk sk;
+    sk.data.assign(n, 0);
+    r.u64_array(sk.data.data(), n);
+    return sk;
+}
+
 // ============================================================================
 //   Opaque handle types
 // ============================================================================
@@ -224,6 +239,8 @@ struct OnionPirClient_t {
     bvks::BvGaloisKeys galois_cache;
     GSWCt gsw_cache;
     OnionPirClient_t() : params(), inner(params) {}
+    OnionPirClient_t(size_t client_id, RlweSk sk)
+        : params(), inner(params, client_id, std::move(sk)) {}
 };
 
 struct OnionPirServer_t {
@@ -278,6 +295,31 @@ extern "C" void onion_client_free(OnionClientHandle h) {
 extern "C" uint64_t onion_client_id(OnionClientHandle h) {
     auto *c = static_cast<OnionPirClient_t *>(h);
     return c ? static_cast<uint64_t>(c->inner.get_client_id()) : 0;
+}
+
+extern "C" OnionClientHandle onion_client_new_from_sk(uint64_t /*num_entries*/,
+                                                      uint64_t client_id,
+                                                      const uint8_t *sk_data,
+                                                      size_t sk_len) {
+    if (!sk_data) return nullptr;
+    try {
+        RlweSk sk = deserialize_secret_key(sk_data, sk_len);
+        return new OnionPirClient_t(static_cast<size_t>(client_id), std::move(sk));
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" OnionBuf onion_client_export_secret_key(OnionClientHandle h) {
+    auto *c = static_cast<OnionPirClient_t *>(h);
+    if (!c) return OnionBuf{nullptr, 0};
+    try {
+        std::vector<uint8_t> bytes;
+        serialize_secret_key(c->inner.get_secret_key(), bytes);
+        return vec_to_buf(bytes);
+    } catch (...) {
+        return OnionBuf{nullptr, 0};
+    }
 }
 
 static void build_client_keys_once(OnionPirClient_t *c) {

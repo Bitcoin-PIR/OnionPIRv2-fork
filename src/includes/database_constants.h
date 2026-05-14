@@ -36,7 +36,18 @@ namespace DBConsts {
   // ==========================================================================
   // Constants common to all configs
   // ==========================================================================
-  constexpr size_t DB_SIZE_MB = 128;
+  // Default 128 MB → num_plaintexts ≈ 40 K (with CONFIG_N2048_K1's 3328-byte
+  // plaintexts). BitcoinPIR's UTXO snapshot at height 948454 produces ≈ 946 K
+  // OnionPIR entries after dust filtering — way beyond the default. Bump to
+  // 3072 MB → num_plaintexts ≈ 968 K, leaving ~2% headroom over current
+  // chain-tip data. Tune up further if either:
+  //   * chain growth pushes the dust-filtered entry count past ~960 K
+  //   * a denser CONFIG variant (CONFIG_N4096_K2_MP at 19968 B/entry) is
+  //     adopted — then the appropriate DB_SIZE_MB is correspondingly larger.
+  //
+  // Override via scripts/run_all_combos.sh's DB_SIZE_MB env var for
+  // benchmarking; production stays at the default committed here.
+  constexpr size_t DB_SIZE_MB = 3072;
   constexpr double NoiseStdDev = 2.55;  // matches Spiral & InsPIRe.
 
   // First-dimension shape policy. See utils::calculate_db_shape.

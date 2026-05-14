@@ -13,15 +13,20 @@ import java.util.Arrays;
 public class DbSaveLoad {
     public static void main(String[] args) throws IOException {
         long ptIdx = 99L;
+        // Right-size each server for a small DB so the saved file fits
+        // in Java's Files.readAllBytes 2GB cap and the test is fast.
+        // Exercises the per-instance num_pt feature (PirParams ctor with
+        // a runtime target).
+        final long SMALL_DB = 1024L;
         Path tmp = Path.of(System.getProperty("java.io.tmpdir"),
                 "onionpir-java-test-" + ProcessHandle.current().pid() + ".bin");
         Files.deleteIfExists(tmp);
 
         // Step 1: gen, query (golden), save.
         byte[] golden;
-        try (OnionPirServer server = new OnionPirServer(0)) {
+        try (OnionPirServer server = new OnionPirServer(SMALL_DB)) {
             server.genData(new long[]{ ptIdx });
-            try (OnionPirClient client = new OnionPirClient(0)) {
+            try (OnionPirClient client = new OnionPirClient(SMALL_DB)) {
                 long id = client.id();
                 server.setGaloisKeys(id, client.galoisKeys());
                 server.setGswKey(id, client.gswKey());
@@ -41,11 +46,11 @@ public class DbSaveLoad {
         }
 
         // Step 2: file-load path. No genData.
-        try (OnionPirServer server = new OnionPirServer(0)) {
+        try (OnionPirServer server = new OnionPirServer(SMALL_DB)) {
             if (!server.loadDb(tmp.toString())) {
                 System.err.println("loadDb failed"); System.exit(1);
             }
-            try (OnionPirClient client = new OnionPirClient(0)) {
+            try (OnionPirClient client = new OnionPirClient(SMALL_DB)) {
                 long id = client.id();
                 server.setGaloisKeys(id, client.galoisKeys());
                 server.setGswKey(id, client.gswKey());
@@ -61,11 +66,11 @@ public class DbSaveLoad {
 
         // Step 3: borrowed-buffer path.
         byte[] bytes = Files.readAllBytes(tmp);
-        try (OnionPirServer server = new OnionPirServer(0)) {
+        try (OnionPirServer server = new OnionPirServer(SMALL_DB)) {
             if (!server.loadDbFromBorrowed(bytes)) {
                 System.err.println("loadDbFromBorrowed failed"); System.exit(1);
             }
-            try (OnionPirClient client = new OnionPirClient(0)) {
+            try (OnionPirClient client = new OnionPirClient(SMALL_DB)) {
                 long id = client.id();
                 server.setGaloisKeys(id, client.galoisKeys());
                 server.setGswKey(id, client.gswKey());

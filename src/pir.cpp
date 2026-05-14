@@ -38,7 +38,9 @@ void PirParams::init_composite_rns() {
   composite_rns_.q1_inv_mod_q2 = q1_inv;
 }
 
-PirParams::PirParams()
+PirParams::PirParams() : PirParams(0) {}
+
+PirParams::PirParams(size_t target_num_pt_arg)
     : rns_mod_bits_(DBConsts::RnsMods.begin(), DBConsts::RnsMods.end()) {
   if constexpr (DBConsts::CompositeFirstDim) {
     init_composite_rns();
@@ -75,7 +77,13 @@ PirParams::PirParams()
   base_log2_key_ = (ct_mod_width + l_key_ - 1) / l_key_;
 
   // =============== Database shape calculation ===============
-  size_t target_num_pt = DBConsts::DB_SIZE_MB * 1024 * 1024 / get_pt_size();
+  // target_num_pt_arg == 0 means "use compile-time default"; any non-zero
+  // value right-sizes this PirParams for a per-instance plaintext budget
+  // (e.g. multi-tenant servers each holding a different fraction of the
+  // global data — see INTEGRATION.md §10).
+  size_t target_num_pt = target_num_pt_arg != 0
+      ? target_num_pt_arg
+      : DBConsts::DB_SIZE_MB * 1024 * 1024 / get_pt_size();
   DEBUG_PRINT("target_num_pt: " << target_num_pt);
   // Per-dim query slot count is l_ep_ (one BFV per gadget power).
   auto [fst_dim_sz, num_dims] = utils::calculate_db_shape(

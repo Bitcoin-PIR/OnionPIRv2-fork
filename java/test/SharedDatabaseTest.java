@@ -15,7 +15,10 @@ import java.util.Arrays;
 
 public class SharedDatabaseTest {
     public static void main(String[] args) throws IOException {
-        PirParamsInfo info = OnionPir.paramsInfo(0);
+        // Right-size both servers so the shared store fits in Java's
+        // Files.readAllBytes 2GB cap, and the test is fast.
+        final long SMALL_DB = 1024L;
+        PirParamsInfo info = OnionPir.paramsInfo(SMALL_DB);
         if (info.rnsModCount != 1) {
             System.out.println("skipping: shared_database needs K=1");
             return;
@@ -29,8 +32,8 @@ public class SharedDatabaseTest {
 
         // Step 1: build + golden + save.
         byte[] golden;
-        try (OnionPirServer s = new OnionPirServer(0);
-             OnionPirClient c = new OnionPirClient(0)) {
+        try (OnionPirServer s = new OnionPirServer(SMALL_DB);
+             OnionPirClient c = new OnionPirClient(SMALL_DB)) {
             s.genData(new long[]{ ptIdx });
             long id = c.id();
             s.setGaloisKeys(id, c.galoisKeys());
@@ -57,8 +60,8 @@ public class SharedDatabaseTest {
         for (int i = 0; i < numPt; i++) indexTable[i] = i;
 
         // Step 3: serving server via shared store.
-        try (OnionPirServer s = new OnionPirServer(0);
-             OnionPirClient c = new OnionPirClient(0)) {
+        try (OnionPirServer s = new OnionPirServer(SMALL_DB);
+             OnionPirClient c = new OnionPirClient(SMALL_DB)) {
             if (!s.setSharedDatabase(store, numPt, indexTable)) {
                 System.err.println("setSharedDatabase failed"); System.exit(1);
             }

@@ -147,10 +147,12 @@ fn buf_to_vec(buf: COnionBuf) -> Vec<u8> {
 // Free functions
 // ============================================================================
 
-/// Inspect the compiled-in database parameters.
+/// Inspect the PIR shape for a given target plaintext count.
 ///
-/// `num_entries` is currently ignored (the upstream PirParams reads its shape
-/// from build-time constants); kept in the signature for forward compatibility.
+/// Pass `num_entries = 0` to preview the compile-time default. Any
+/// non-zero value previews the shape a `Server::new(num_entries)` or
+/// `Client::new(num_entries)` would get. Useful for pre-flighting
+/// storage and matmul cost decisions without constructing the server.
 pub fn params_info(num_entries: u64) -> ParamsInfo {
     unsafe { onion_params_info(num_entries) }
 }
@@ -168,8 +170,12 @@ pub struct Client {
 unsafe impl Send for Client {}
 
 impl Client {
-    /// Construct a fresh client with the compiled-in default parameters.
-    /// `num_entries` is currently ignored (see `params_info`).
+    /// Construct a fresh client.
+    ///
+    /// `num_entries` shapes the client's `PirParams` for that many
+    /// plaintexts. Pass `0` to use the compile-time default. The client's
+    /// shape must match the server it talks to — query bytes encode the
+    /// PirParams-derived `fst_dim_sz` / `num_dims`.
     pub fn new(num_entries: u64) -> Self {
         let h = unsafe { onion_client_new(num_entries) };
         assert!(!h.is_null(), "onion_client_new returned null");
@@ -177,7 +183,9 @@ impl Client {
     }
 
     /// Reconstruct a client from a previously-exported secret key plus the
-    /// id the server already knows. Returns `None` on size / format mismatch.
+    /// id the server already knows. `num_entries` must match the value used
+    /// when the original client was constructed (pass `0` if the original
+    /// used the default). Returns `None` on size / format mismatch.
     pub fn from_secret_key(num_entries: u64, client_id: u64, sk: &[u8]) -> Option<Self> {
         let h = unsafe { onion_client_new_from_sk(num_entries, client_id, sk.as_ptr(), sk.len()) };
         if h.is_null() { None } else { Some(Self { h }) }
@@ -240,7 +248,19 @@ pub struct Server {
 unsafe impl Send for Server {}
 
 impl Server {
-    /// Construct a fresh server with the compiled-in default parameters.
+    /// Construct a fresh server.
+    ///
+    /// `num_entries` shapes the server's `PirParams` for that many
+    /// plaintexts. Pass `0` to use the compile-time default
+    /// (`DBConsts::DB_SIZE_MB`-derived). For multi-tenant deployments
+    /// that instantiate many servers at different scales, pass each
+    /// server its own `num_entries` so its DB / matmul shape fits the
+    /// data it actually holds — avoids paying the storage and per-query
+    /// cost of the largest-server-shaped DB on every instance.
+    ///
+    /// Note: `calculate_db_shape` rounds the request up to a
+    /// matmul-friendly size, so `params_info().num_plaintexts` may
+    /// exceed the requested value.
     pub fn new(num_entries: u64) -> Self {
         let h = unsafe { onion_server_new(num_entries) };
         assert!(!h.is_null(), "onion_server_new returned null");

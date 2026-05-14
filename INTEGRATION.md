@@ -226,6 +226,11 @@ To approximate the old capacity with the new code: build with
 
 ## 4. Capacity math (read at runtime, don't hardcode)
 
+**`params_info(num_entries)` previews the shape for a given target.** Pass
+`0` for the compile-time default; pass a non-zero value to preview the shape
+a `Server::new(num_entries)` / `Client::new(num_entries)` of the same size
+would produce. See §10 below for when to use the runtime override.
+
 All consumers should pull these from `params_info(0)`:
 
 | Field | Meaning | Old default | New default |
@@ -233,13 +238,20 @@ All consumers should pull these from `params_info(0)`:
 | `poly_degree` (N) | Lattice / plaintext coeff count | 2048 | 2048 |
 | `rns_mod_count` (K) | RNS limbs | 1 | 1 |
 | `entry_size` | Bytes per plaintext | 3840 | 3328 |
-| `num_plaintexts` | Total bins | 65536 (2¹⁶) | 40448 (not a power of 2) |
+| `num_plaintexts` | Total bins (defaults to `DB_SIZE_MB / pt_size`; **runtime-overridable** since 2026-05-15) | 65536 (2¹⁶) | shape-dependent |
 | `fst_dim_sz` | First-dimension size | 256 | 512 |
-| `other_dim_sz` | Other-dim product | 256 | 79 |
-| `db_size_mb` | Total DB size | ~245 MB | ~128 MB |
+| `other_dim_sz` | Other-dim product | 256 | shape-dependent |
+| `db_size_mb` | Pre-NTT byte budget (`num_pt × entry_size`) | ~245 MB | shape-dependent |
+| `physical_size_mb` | **On-disk size** (`num_pt × coeff_val_cnt × sizeof(db_coeff_t)`, the actual `save_db` output size) | — | shape-dependent |
 
-The total capacity is `entry_size × num_plaintexts` bytes. At the default
-config that's about **128 MB**, down from **240 MB** before.
+The total *useful* capacity is `entry_size × num_plaintexts` bytes (the
+`db_size_mb` field). The **on-disk** size is what `save_db` writes and what
+`load_db` / `load_db_from_borrowed` need to read — that's `physical_size_mb`,
+which is *larger* than `db_size_mb` because the saved DB is in post-NTT
+level-major form. At the default config (N=2048, PlainMod=14, K=1) the
+expansion factor is `(coeff_val_cnt × 8) / pt_size = 16384 / 3328 ≈ 4.92×`.
+Previously `physical_size_mb` aliased `db_size_mb`; that was a documentation
+footgun (BitcoinPIR hit it) and is fixed now.
 
 ---
 
@@ -402,3 +414,72 @@ cd java && ./build.sh
 `-DUSE_HEXL=OFF` (default on AArch64 / WASM) falls back to the scalar shim
 at [src/hexl_compat/](src/hexl_compat/) (Shoup mul + NEON eltwise on ARM —
 about 3× slower than HEXL-on-x86 in the default config).
+
+---
+
+## 10. Right-sizing per-server: `Server::new(num_entries)` (since 2026-05-15)
+
+The `num_entries` argument to `Server::new`, `Client::new`,
+`Client::from_secret_key`, and `params_info` shapes that single PirParams
+instance for the requested plaintext count. Pass `0` to use the compile-
+time `DBConsts::DB_SIZE_MB`-derived default; pass a non-zero value to
+override.
+
+The lattice config (`PolyDegree`, `PlainMod`, `L_EP`, `L_KEY`, `L_KS`,
+`TREE_HEIGHT`, `FST_DIM_POW2`, `NoiseStdDev`) stays compile-time
+constexpr — only `target_num_pt` moves runtime.
+
+### When this matters
+
+If your deployment has a single PirServer per process, you can ignore
+this — the compile-time default works fine.
+
+If you instantiate **many servers in one process at different scales**
+(multi-tenant setups, multi-group cuckoo-PIR architectures, etc.), pass
+each server its own `num_entries` matching the actual data it holds.
+Otherwise every server gets the largest-server shape, which costs:
+
+- **Storage**: each server's `save_db` writes the full
+  `num_pt × coeff_val_cnt × 8` bytes regardless of how much real data
+  is in there. At `DB_SIZE_MB=3072` (CONFIG_N2048_K1) that's **15 GB
+  per server file**. 75 servers → 1.1 TB total.
+- **Per-query compute**: the first-dim matmul runs over the full
+  `num_pt`-shaped matrix, not the per-server data size. For BitcoinPIR's
+  shape (per-group ~10 K plaintexts vs. global 968 K) that's ~95× more
+  ops per query than the per-instance shape would do.
+
+### Example: per-group server sizing
+
+```rust
+// Each group has ~10 K bins of actual data; size the per-group server
+// to fit that, not the global DB_SIZE_MB.
+for group_id in 0..75 {
+    let mut s = Server::new(group_bins[group_id] as u64);
+    // s.params_info() now reports per-group num_pt ~10240, fst_dim
+    // ~128, save_db output ~160 MB — instead of 968k / 512 / 15 GB
+    // that DB_SIZE_MB=3072 would have produced.
+    populate(&mut s, &group_data[group_id]);
+    s.save_db(&format!("group_{}.bin", group_id));
+}
+```
+
+### Client must match server
+
+Query bytes encode the PirParams-derived `fst_dim_sz` and `num_dims`,
+so a client built with `num_entries=N` cannot talk to a server built
+with a different `num_entries`. Either:
+
+- Both sides agree at construction (the typical case — the client knows
+  its target group's bin count), or
+- Use `Indirect DB mode` (§2.3) which keeps every server at the same
+  `num_pt` while sharing a single backing store. Storage scales like
+  the per-instance fix, but per-query compute does **not** — the matmul
+  still runs at the full shape. Pick this only when you can't agree on
+  shape at the client (rare).
+
+### `calculate_db_shape` rounds up
+
+The shape calculator picks a matmul-friendly `(fst_dim_sz, num_dims)`,
+so `params_info(N).num_plaintexts` may exceed `N`. Treat `N` as a
+floor on the bin count; read `params_info()` after construction to see
+the actual shape you got.

@@ -28,7 +28,20 @@ struct CompositeRnsTables {
 // ================== CLASS DEFINITIONS ==================
 class PirParams {
 public:
+  // Default ctor: derive target_num_pt from compile-time DBConsts::DB_SIZE_MB
+  // (the run.py / test-harness path).
   PirParams();
+  // Explicit ctor: shape the PirParams for the given target plaintext count.
+  // target_num_pt == 0 is treated identically to the no-arg constructor
+  // (falls back to DBConsts::DB_SIZE_MB) so FFI callers can pass 0 to
+  // mean "use the build-time default".
+  //
+  // The other shape constants (PolyDegree, PlainMod, L_*, TREE_HEIGHT,
+  // FST_DIM_POW2) stay constexpr — they're the lattice config, not a
+  // per-instance choice. Downstream consumers that instantiate many
+  // PirServers at different scales (multi-tenant / multi-group setups)
+  // use this ctor to right-size each server independently.
+  explicit PirParams(size_t target_num_pt);
   PirParams(const PirParams &pir_params) = default;
 
   // ================== getters ==================

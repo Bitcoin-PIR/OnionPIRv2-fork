@@ -385,3 +385,85 @@ fn shared_database_identity_index_table() {
 
     let _ = std::fs::remove_file(&tmp_path);
 }
+
+/// Per-instance `num_pt` must actually vary with the constructor argument.
+/// This pins the contract that `Server::new(num_entries)` shapes that
+/// server independently of the compile-time `DBConsts::DB_SIZE_MB`, which
+/// is what multi-tenant consumers (e.g. BitcoinPIR's per-group servers)
+/// rely on to avoid 100× storage blowup at the largest-server shape.
+#[test]
+fn per_instance_num_pt_varies() {
+    let small_target: u64 = 1024;
+    let medium_target: u64 = 16384;
+    let default_target: u64 = 0;  // sentinel: use compile-time DB_SIZE_MB
+
+    let info_small   = params_info(small_target);
+    let info_medium  = params_info(medium_target);
+    let info_default = params_info(default_target);
+
+    // Each constructed shape is at least as big as the request — the shape
+    // calculator rounds up to a matmul-friendly size, never down.
+    assert!(info_small.num_plaintexts   >= small_target,
+            "small  shape {} < requested {}",
+            info_small.num_plaintexts, small_target);
+    assert!(info_medium.num_plaintexts  >= medium_target,
+            "medium shape {} < requested {}",
+            info_medium.num_plaintexts, medium_target);
+
+    // The three configurations are distinct in either dimension count or
+    // first-dim size — the rounding can sometimes collapse num_plaintexts,
+    // but the shape vector still differs.
+    assert!(info_small.num_plaintexts  < info_medium.num_plaintexts,
+            "small ({}) >= medium ({}) — calculate_db_shape didn't differentiate",
+            info_small.num_plaintexts, info_medium.num_plaintexts);
+    assert!(info_medium.num_plaintexts < info_default.num_plaintexts,
+            "medium ({}) >= default ({}) — runtime override didn't shrink the shape",
+            info_medium.num_plaintexts, info_default.num_plaintexts);
+
+    // PolyDegree / rns_mod_count / entry_size are lattice config and must
+    // stay constant across instances.
+    assert_eq!(info_small.poly_degree,   info_default.poly_degree);
+    assert_eq!(info_small.rns_mod_count, info_default.rns_mod_count);
+    assert_eq!(info_small.entry_size,    info_default.entry_size);
+
+    // End-to-end: a small-shaped server actually allocates a small DB and
+    // PIR works end-to-end at that shape.
+    let mut s = Server::new(small_target);
+    s.gen_data(&[0]);
+    let c = Client::new(small_target);
+    s.set_galois_keys(c.id(), &c.galois_keys());
+    s.set_gsw_key(c.id(), &c.gsw_key());
+    let q = c.generate_query(0);
+    let resp = s.answer_query(c.id(), &q);
+    let pt = c.decrypt_response(&resp);
+    assert_eq!(pt, s.get_original_plaintext(0),
+               "small-instance PIR result didn't match recorded plaintext");
+
+    // physical_size_mb now reports the on-disk size (post-NTT, level-major)
+    // and should exceed db_size_mb (the pre-NTT byte budget) — at the
+    // default config (N=2048, K=1, PlainMod=14) the multiplier is
+    // (coeff_val_cnt * 8) / pt_size = (2048 * 8) / (2048 * 13 / 8) ≈ 4.92.
+    assert!(info_default.physical_size_mb > info_default.db_size_mb,
+            "physical_size_mb ({}) should exceed db_size_mb ({}) after the fix",
+            info_default.physical_size_mb, info_default.db_size_mb);
+
+    // save_db output must size to the per-instance shape (locks in the
+    // BitcoinPIR §6.3 acceptance criterion: per-group save_db ≈ 150 MB,
+    // not the 15 GB global-shape blowup the request doc reported).
+    let tmp_path = std::env::temp_dir().join(
+        format!("onionpir-shape-test-{}.bin", std::process::id()));
+    let tmp = tmp_path.to_str().unwrap();
+    let _ = std::fs::remove_file(&tmp_path);
+    let mut shape_s = Server::new(small_target);
+    shape_s.gen_data(&[]);  // no recorded indices needed for the size check
+    assert!(shape_s.save_db(tmp));
+    let small_bytes = std::fs::metadata(&tmp_path).unwrap().len();
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let default_physical_bytes =
+        (info_default.physical_size_mb * 1024.0 * 1024.0) as u64;
+    assert!((small_bytes as f64) < (default_physical_bytes as f64) * 0.1,
+            "small-instance save_db ({} B) should be << default ({} B); \
+             per-instance shape isn't flowing through",
+            small_bytes, default_physical_bytes);
+}

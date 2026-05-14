@@ -242,15 +242,21 @@ struct OnionPirClient_t {
     bool keys_built = false;
     bvks::BvGaloisKeys galois_cache;
     GSWCt gsw_cache;
-    OnionPirClient_t() : params(), inner(params) {}
-    OnionPirClient_t(size_t client_id, RlweSk sk)
-        : params(), inner(params, client_id, std::move(sk)) {}
+    // num_entries == 0 → compile-time default; any non-zero value
+    // right-sizes this client's PirParams for that many plaintexts. The
+    // client's params must match the server's it talks to (the query's
+    // fst_dim_sz / num_dims are encoded in the wire bytes).
+    explicit OnionPirClient_t(size_t num_entries)
+        : params(num_entries), inner(params) {}
+    OnionPirClient_t(size_t num_entries, size_t client_id, RlweSk sk)
+        : params(num_entries), inner(params, client_id, std::move(sk)) {}
 };
 
 struct OnionPirServer_t {
     PirParams params;
     PirServer inner;
-    OnionPirServer_t() : params(), inner(params) {}
+    explicit OnionPirServer_t(size_t num_entries)
+        : params(num_entries), inner(params) {}
 };
 
 // ============================================================================
@@ -261,11 +267,14 @@ extern "C" void onion_free_buf(OnionBuf buf) {
     std::free(buf.data);
 }
 
-extern "C" OnionPirParamsInfo onion_params_info(uint64_t /*num_entries*/) {
-    // Upstream's PirParams is constructed from compile-time DBConsts, so
-    // num_entries is currently ignored. Kept in the signature for forward
-    // compatibility with a future runtime-sized constructor.
-    PirParams p;
+extern "C" OnionPirParamsInfo onion_params_info(uint64_t num_entries) {
+    // Constructs a transient PirParams shaped for `num_entries` plaintexts
+    // (0 = compile-time default) so callers can preview the exact shape
+    // they'll get from onion_server_new / onion_client_new with the same
+    // argument. Note that calculate_db_shape rounds num_entries up to a
+    // matmul-friendly value, so the returned num_plaintexts may exceed
+    // what was requested.
+    PirParams p(static_cast<size_t>(num_entries));
     OnionPirParamsInfo info{};
     info.num_entries      = static_cast<uint64_t>(p.get_num_pt()); // one entry per plaintext for now
     info.entry_size       = static_cast<uint64_t>(p.get_pt_size());
@@ -275,8 +284,8 @@ extern "C" OnionPirParamsInfo onion_params_info(uint64_t /*num_entries*/) {
     info.poly_degree      = static_cast<uint64_t>(DBConsts::PolyDegree);
     info.rns_mod_count    = static_cast<uint64_t>(p.K());
     info.coeff_val_cnt    = static_cast<uint64_t>(DBConsts::PolyDegree) * p.K();
-    info.db_size_mb       = p.get_DBSize_MB();
-    info.physical_size_mb = p.get_DBSize_MB(); // physical == logical until composite mod adds split layout
+    info.db_size_mb       = p.get_DBSize_MB();          // pre-NTT byte budget
+    info.physical_size_mb = p.get_physical_storage_MB(); // actual on-disk size (post-NTT, level-major)
     return info;
 }
 
@@ -284,9 +293,9 @@ extern "C" OnionPirParamsInfo onion_params_info(uint64_t /*num_entries*/) {
 // Client
 // ----------------------------------------------------------------------------
 
-extern "C" OnionClientHandle onion_client_new(uint64_t /*num_entries*/) {
+extern "C" OnionClientHandle onion_client_new(uint64_t num_entries) {
     try {
-        return new OnionPirClient_t();
+        return new OnionPirClient_t(static_cast<size_t>(num_entries));
     } catch (...) {
         return nullptr;
     }
@@ -301,14 +310,16 @@ extern "C" uint64_t onion_client_id(OnionClientHandle h) {
     return c ? static_cast<uint64_t>(c->inner.get_client_id()) : 0;
 }
 
-extern "C" OnionClientHandle onion_client_new_from_sk(uint64_t /*num_entries*/,
+extern "C" OnionClientHandle onion_client_new_from_sk(uint64_t num_entries,
                                                       uint64_t client_id,
                                                       const uint8_t *sk_data,
                                                       size_t sk_len) {
     if (!sk_data) return nullptr;
     try {
         RlweSk sk = deserialize_secret_key(sk_data, sk_len);
-        return new OnionPirClient_t(static_cast<size_t>(client_id), std::move(sk));
+        return new OnionPirClient_t(static_cast<size_t>(num_entries),
+                                    static_cast<size_t>(client_id),
+                                    std::move(sk));
     } catch (...) {
         return nullptr;
     }
@@ -398,9 +409,9 @@ extern "C" OnionBuf onion_client_decrypt_response(OnionClientHandle h,
 // Server
 // ----------------------------------------------------------------------------
 
-extern "C" OnionServerHandle onion_server_new(uint64_t /*num_entries*/) {
+extern "C" OnionServerHandle onion_server_new(uint64_t num_entries) {
     try {
-        return new OnionPirServer_t();
+        return new OnionPirServer_t(static_cast<size_t>(num_entries));
     } catch (...) {
         return nullptr;
     }

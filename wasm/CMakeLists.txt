@@ -1,84 +1,93 @@
 cmake_minimum_required(VERSION 3.13)
+
+# Phase-3 WASM build. Configure with:
+#   emcmake cmake -S . -B build (from the repo's wasm/ directory)
+# and build with: cmake --build build
+#
+# Toolchain notes:
+# - HEXL is x86-only, so the WASM build always uses the scalar shim at
+#   src/hexl_compat/. There's no way to flip this off here.
+# - We compile a client-only WASM module: upstream's client-side sources +
+#   bv_keyswitch + supporting infrastructure, plus our C ABI (onion_ffi.cpp)
+#   so the embind layer in bindings.cpp can reuse the same wire format the
+#   Rust crate uses.
+
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(onionpir-wasm CXX)
+
+if (NOT EMSCRIPTEN)
+    message(FATAL_ERROR
+        "wasm/CMakeLists.txt must be configured under emcmake — "
+        "run `emcmake cmake -S . -B build` from the wasm/ directory.")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ==================== SEAL configuration for Emscripten ====================
-# Force-set intrinsic detection results BEFORE add_subdirectory(SEAL).
-# Emscripten cannot run check_cxx_source_runs() during cross-compilation,
-# so we tell SEAL what's available at compile time.
+# -O3 for runtime speed; -fexceptions for the throw/catch in onion_ffi.cpp's
+# error paths (Emscripten disables them by default and aborts on throw).
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fexceptions")
 
-# Emscripten's clang supports __int128 (via i64 pair emulation) and __builtin_clzll
-set(SEAL___INT128_FOUND ON CACHE INTERNAL "Emscripten supports __int128")
-set(SEAL___BUILTIN_CLZLL_FOUND ON CACHE INTERNAL "Emscripten clang supports __builtin_clzll")
-
-# x86-only intrinsics — not available in WASM
-set(SEAL__ADDCARRY_U64_FOUND OFF CACHE INTERNAL "x86-only intrinsic")
-set(SEAL__SUBBORROW_U64_FOUND OFF CACHE INTERNAL "x86-only intrinsic")
-
-# Memory functions — may not be available in WASM/Emscripten
-set(SEAL_MEMSET_S_FOUND OFF CACHE INTERNAL "Not available in WASM")
-set(SEAL_EXPLICIT_BZERO_FOUND OFF CACHE INTERNAL "Not available in WASM")
-set(SEAL_EXPLICIT_MEMSET_FOUND OFF CACHE INTERNAL "Not available in WASM")
-
-# SEAL build options
-set(SEAL_USE_INTEL_HEXL OFF CACHE BOOL "" FORCE)
-set(SEAL_USE_MSGSL      OFF CACHE BOOL "" FORCE)
-set(SEAL_USE_ZLIB       OFF CACHE BOOL "" FORCE)
-set(SEAL_USE_ZSTD       OFF CACHE BOOL "" FORCE)
-set(SEAL_BUILD_DEPS     ON  CACHE BOOL "" FORCE)
-set(SEAL_THROW_ON_TRANSPARENT_CIPHERTEXT OFF CACHE BOOL "" FORCE)
-set(SEAL_USE_ALIGNED_ALLOC OFF CACHE BOOL "" FORCE)
-
-# SEAL must also be compiled with exception support for Emscripten
-if(EMSCRIPTEN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
-endif()
-
-add_subdirectory(../rust/onionpir/extern/SEAL seal_build)
-
-# ==================== Client-only WASM module ====================
-# Define _BENCHMARK to enable the no-op debug macros in logging.h / utils.h
+# Define _BENCHMARK so the macros in includes/logging.h and includes/utils.h
+# (DEBUG_PRINT, PRINT_INT_ARRAY) resolve to no-ops. Without this they're
+# undeclared and the build fails.
 add_compile_definitions(_BENCHMARK)
-# Only compile client-side source files (no server.cpp, no matrix.cpp)
 
-set(REPO_SRC ../src)
+set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+# Upstream client-side sources. server.cpp / matrix.cpp are intentionally
+# excluded — the WASM module is client-only.
+set(ONIONPIR_CLIENT_SRC
+    "${REPO_ROOT}/src/bv_keyswitch.cpp"
+    "${REPO_ROOT}/src/client.cpp"
+    "${REPO_ROOT}/src/gsw.cpp"
+    "${REPO_ROOT}/src/logging.cpp"
+    "${REPO_ROOT}/src/pir.cpp"
+    "${REPO_ROOT}/src/rlwe.cpp"
+    "${REPO_ROOT}/src/utils.cpp"
+    "${REPO_ROOT}/src/hexl_shim.cpp"      # scalar fallback (HEXL is x86-only)
+    "${REPO_ROOT}/src/onion_ffi.cpp"      # C ABI — bindings.cpp calls into it
+)
+
+# Module target.
 add_executable(onionpir_client
     bindings.cpp
     hash_utils.cpp
-    ${REPO_SRC}/client.cpp
-    ${REPO_SRC}/pir.cpp
-    ${REPO_SRC}/gsw_eval.cpp
-    ${REPO_SRC}/utils.cpp
-    ${REPO_SRC}/logging.cpp
+    ${ONIONPIR_CLIENT_SRC}
 )
 
 target_include_directories(onionpir_client PRIVATE
-    ${REPO_SRC}/includes
-    ${CMAKE_CURRENT_SOURCE_DIR}
+    "${REPO_ROOT}/src/includes"
+    "${REPO_ROOT}/src/hexl_compat"        # scalar hexl/hexl.hpp shim header
+    "${CMAKE_CURRENT_SOURCE_DIR}"         # for hash_utils.h
 )
 
-target_link_libraries(onionpir_client PRIVATE SEAL::seal)
+# Emscripten link flags:
+#   --bind                       — enable embind
+#   ENVIRONMENT=web,worker       — usable from browser main thread and workers
+#   ALLOW_MEMORY_GROWTH=1        — heap grows on demand
+#   INITIAL_MEMORY=64MB          — start big enough for keygen + one query
+#   MAXIMUM_MEMORY=1GB           — cap at 1GB to bound runaway growth
+#   EXPORT_NAME=createOnionPir   — JS factory function name
+#   MODULARIZE=1                 — emit an ES-module-style factory
+#   EXPORT_ES6=1                 — produce ES module syntax
+#   DISABLE_EXCEPTION_CATCHING=0 — let the throws from onion_ffi.cpp escape
+target_link_options(onionpir_client PRIVATE
+    "--bind"
+    "-sENVIRONMENT=web,worker,node"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sINITIAL_MEMORY=67108864"
+    "-sMAXIMUM_MEMORY=1073741824"
+    "-sMODULARIZE=1"
+    "-sEXPORT_ES6=1"
+    "-sEXPORT_NAME=createOnionPir"
+    "-sDISABLE_EXCEPTION_CATCHING=0"
+    "-fexceptions"
+)
 
-# ==================== Emscripten link flags ====================
-if(EMSCRIPTEN)
-    # Enable C++ exceptions (SEAL uses them internally)
-    target_compile_options(onionpir_client PRIVATE -fexceptions)
-
-    target_link_options(onionpir_client PRIVATE
-        -lembind
-        -fexceptions
-        -sWASM=1
-        -sMODULARIZE=1
-        -sEXPORT_NAME=createOnionPirModule
-        -sALLOW_MEMORY_GROWTH=1
-        -sINITIAL_MEMORY=67108864      # 64 MB
-        -sMAXIMUM_MEMORY=268435456     # 256 MB
-        -sNO_FILESYSTEM=0
-        -sENVIRONMENT=web,worker,node
-        -sSINGLE_FILE=0
-    )
-endif()
+# Emit ES-module .js + .wasm side files.
+set_target_properties(onionpir_client PROPERTIES
+    OUTPUT_NAME "onionpir_client"
+    SUFFIX ".mjs"
+)

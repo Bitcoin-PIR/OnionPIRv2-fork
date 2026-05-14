@@ -1,117 +1,119 @@
 package com.onionpir.jna;
 
-import com.sun.jna.NativeLong;
 import com.sun.jna.Pointer;
 
 /**
  * Safe wrapper around an OnionPIR server handle.
- * <p>
- * Thread safety: a single server instance must not be shared across threads.
- * Use {@link OnionPirQueue} for concurrent query handling.
+ *
+ * <p>Workflow:
+ * <ol>
+ *   <li>{@link #genData(long[])} — populate with random data (test path);
+ *       pass the plaintext indices you'll query so
+ *       {@link #getOriginalPlaintext(long)} stays valid for those rows.</li>
+ *   <li>{@link #setGaloisKeys(long, byte[])} / {@link #setGswKey(long, byte[])}
+ *       — register a client's key blobs.</li>
+ *   <li>{@link #answerQuery(long, byte[])} — run the PIR query.</li>
+ * </ol>
+ *
+ * <p>Thread safety: a single instance must not be shared across threads.
+ *
+ * <p>Production-mode database building (push_chunk / preprocess / load /
+ * save / load_from_borrowed) is not yet exposed by the upstream-tracking
+ * FFI — it lands in Phase 6.
  */
-public class OnionPirServer implements AutoCloseable {
+public final class OnionPirServer implements AutoCloseable {
 
     private static final OnionPirLibrary LIB = OnionPirLibrary.INSTANCE;
-
     private Pointer handle;
 
     /**
-     * Create a new server for a database with {@code numEntries} rows.
-     * Pass 0 to use the compiled-in default.
+     * @param numEntries currently ignored — upstream params are compile-time.
      */
     public OnionPirServer(long numEntries) {
         handle = LIB.onion_server_new(numEntries);
         if (handle == null) {
-            throw new RuntimeException("Failed to create OnionPirServer");
+            throw new RuntimeException("onion_server_new returned null");
         }
     }
 
     /**
-     * Load a preprocessed database from disk.
+     * Populate the DB with random data. If {@code queryIndices} is non-empty,
+     * only those plaintexts are retained for {@link #getOriginalPlaintext}.
+     */
+    public void genData(long[] queryIndices) {
+        if (queryIndices == null) queryIndices = new long[0];
+        LIB.onion_server_gen_data(handle, queryIndices, queryIndices.length);
+    }
+
+    /**
+     * Push externally-provided plaintexts into the DB. {@code plaintexts} is
+     * a flat {@code long[]} of length {@code count * N}; plaintext {@code p}
+     * occupies indices {@code [p*N, (p+1)*N)} with each value in {@code [0, t)}.
+     * The chunk is stored at DB slots {@code [offset, offset+count)}.
      *
-     * @return true on success, false on failure
+     * @param recordIndices optional subset of {@code [offset, offset+count)} to
+     *                      retain pre-NTT for {@link #getOriginalPlaintext(long)}.
+     * @return {@code true} on success; {@code false} on range overflow.
+     */
+    public boolean pushPlaintexts(long[] plaintexts, long count, long offset,
+                                  long[] recordIndices) {
+        if (recordIndices == null) recordIndices = new long[0];
+        return LIB.onion_server_push_plaintexts(
+                handle, plaintexts, count, offset,
+                recordIndices, recordIndices.length) != 0;
+    }
+
+    /**
+     * Recover the pre-NTT plaintext for {@code ptIdx} (must have been passed
+     * to a prior {@link #genData(long[])} call). Format matches
+     * {@link OnionPirClient#decryptResponse(byte[])} for direct equality
+     * checks in tests.
+     */
+    public byte[] getOriginalPlaintext(long ptIdx) {
+        return OnionPir.bufToBytes(LIB.onion_server_get_original_plaintext(handle, ptIdx));
+    }
+
+    /** Register a client's serialized BV galois keys. */
+    public void setGaloisKeys(long clientId, byte[] data) {
+        LIB.onion_server_set_galois_keys(handle, clientId, data, data.length);
+    }
+
+    /** Register a client's serialized GSW(s) key. */
+    public void setGswKey(long clientId, byte[] data) {
+        LIB.onion_server_set_gsw_key(handle, clientId, data, data.length);
+    }
+
+    /** Run a PIR query and return the bit-packed response. */
+    public byte[] answerQuery(long clientId, byte[] query) {
+        OnionBuf.ByValue buf = LIB.onion_server_answer_query(
+                handle, clientId, query, query.length);
+        return OnionPir.bufToBytes(buf);
+    }
+
+    /**
+     * Save the post-NTT, realigned database to {@code path}.
+     * @return {@code true} on success; {@code false} on I/O failure or empty DB.
+     */
+    public boolean saveDb(String path) {
+        return LIB.onion_server_save_db(handle, path) != 0;
+    }
+
+    /**
+     * Load a previously-saved DB. Returns {@code false} if the file is
+     * missing or the on-disk layout doesn't match the server's compile-time
+     * config.
      */
     public boolean loadDb(String path) {
-        return LIB.onion_server_load_db(handle, path) == 1;
-    }
-
-    /** Save the preprocessed database to disk. */
-    public void saveDb(String path) {
-        LIB.onion_server_save_db(handle, path);
-    }
-
-    /** Push a raw data chunk into the database at the given chunk index. */
-    public void pushChunk(byte[] data, long chunkIdx) {
-        LIB.onion_server_push_chunk(handle, data,
-                new NativeLong(data.length), new NativeLong(chunkIdx));
-    }
-
-    /** Preprocess the database for PIR queries (NTT expansion). */
-    public void preprocess() {
-        LIB.onion_server_preprocess(handle);
+        return LIB.onion_server_load_db(handle, path) != 0;
     }
 
     /**
-     * Attach a shared NTT-expanded database with per-instance indirection.
-     *
-     * @param sharedNttStore          level-major layout, caller-owned
-     * @param sharedStoreNumEntries   number of entries in the shared store
-     * @param indexTable              per-instance index mapping, caller-owned
-     * @param indexTableLen           length of the index table
+     * Zero-copy: alias an already-formatted DB buffer. The buffer must
+     * outlive the server (the server keeps a reference, doesn't copy).
+     * Returns {@code false} on header / size mismatch.
      */
-    public void setSharedDatabase(Pointer sharedNttStore, long sharedStoreNumEntries,
-                                  Pointer indexTable, long indexTableLen) {
-        LIB.onion_server_set_shared_database(handle, sharedNttStore,
-                new NativeLong(sharedStoreNumEntries), indexTable,
-                new NativeLong(indexTableLen));
-    }
-
-    /**
-     * NTT-expand a single raw entry into the destination buffer.
-     *
-     * @param rawEntry raw entry bytes
-     * @param dst      caller-allocated buffer for coeff_val_cnt uint64 values
-     */
-    public void nttExpandEntry(byte[] rawEntry, Pointer dst) {
-        LIB.onion_server_ntt_expand_entry(handle, rawEntry,
-                new NativeLong(rawEntry.length), dst);
-    }
-
-    /** Register a client's Galois key for server-side FHE evaluation. */
-    public void setGaloisKey(long clientId, byte[] key) {
-        LIB.onion_server_set_galois_key(handle, clientId,
-                key, new NativeLong(key.length));
-    }
-
-    /** Register a client's GSW key for server-side FHE evaluation. */
-    public void setGswKey(long clientId, byte[] key) {
-        LIB.onion_server_set_gsw_key(handle, clientId,
-                key, new NativeLong(key.length));
-    }
-
-    /** Remove all keys for a client. */
-    public void removeClient(long clientId) {
-        LIB.onion_server_remove_client(handle, clientId);
-    }
-
-    /**
-     * Answer an FHE query synchronously.
-     *
-     * @param clientId client that generated the query
-     * @param query    encrypted query bytes from {@link OnionPirClient#generateQuery}
-     * @return encrypted response bytes for the client to decrypt
-     */
-    public byte[] answerQuery(long clientId, byte[] query) {
-        return OnionPir.bufToBytes(LIB.onion_server_answer_query(
-                handle, clientId, query, new NativeLong(query.length)));
-    }
-
-    /**
-     * Attach a shared key store to this server.
-     * The store must outlive the server (non-owning reference).
-     */
-    public void setKeyStore(OnionKeyStore store) {
-        LIB.onion_server_set_key_store(handle, store.getHandle());
+    public boolean loadDbFromBorrowed(byte[] data) {
+        return LIB.onion_server_load_db_from_borrowed(handle, data, data.length) != 0;
     }
 
     @Override
@@ -120,10 +122,5 @@ public class OnionPirServer implements AutoCloseable {
             LIB.onion_server_free(handle);
             handle = null;
         }
-    }
-
-    /** Package-private handle access for interop with other wrappers. */
-    Pointer getHandle() {
-        return handle;
     }
 }

@@ -1,3 +1,17 @@
+# Rust
+/target/
+/Cargo.lock
+
+# Reference copy of the pre-port fork tree; kept out of the new branch
+/_fork_legacy/
+
+# Build dirs
+/build-ffi/
+/build-shared/
+/wasm/build/
+/java/build/
+/java/lib/
+
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -10,24 +24,23 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 build
-.DS_Store
-.vscode/settings.json
 build/Onion-PIR
-.idea
 cmake-build-debug
-.cache
 temp/
-# Ignore SEAL build artifacts in root, but not extern/SEAL submodule
-/SEAL
+SEAL
 lib64/
 include/
 output.txt
 error.txt
-run_onion_pir.sbatch
 outputs/
-.vscode/
 note&analysis/
 PIR_papers/
-preprocessed_db.bin
-rawDB.bin
-rust/onionpir/target/
+hexl_install/
+seal_install/
+*.sbatch
+openfhe_install/
+openfhe_test/
+claude_resp/
+codex_resp/
+.*
+overleaf/

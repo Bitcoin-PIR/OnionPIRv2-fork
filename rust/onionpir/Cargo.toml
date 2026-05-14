@@ -1,10 +1,13 @@
 [package]
 name = "onionpir"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Rust bindings for OnionPIRv2 — a high-performance Private Information Retrieval library"
-links = "onionpir"
-build = "build.rs"
+description = "Rust bindings for OnionPIRv2 (SEAL-free, BV key-switching)"
+license = "MIT"
+
+[lib]
+name = "onionpir"
+crate-type = ["rlib"]
 
 [build-dependencies]
 cmake = "0.1"

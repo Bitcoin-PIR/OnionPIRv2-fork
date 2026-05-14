@@ -1,42 +1,52 @@
-#!/bin/bash
-# Build the OnionPIR WASM client module.
-# Prerequisites: emsdk installed and activated (source ~/emsdk/emsdk_env.sh)
-set -e
+#!/usr/bin/env bash
+#
+# Build the OnionPIRv2 WASM client. Requires emscripten on $PATH:
+#   - brew install emscripten   (macOS)
+#   - or: https://emscripten.org/docs/getting_started/downloads.html
+#
+# Output:
+#   build/onionpir_client.mjs   (ES module factory)
+#   build/onionpir_client.wasm  (compiled module)
+#
+# Usage:
+#   cd wasm && ./build.sh
+#
+# Pass --clean to wipe build/ first; pass --debug for -O0 + debug symbols.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/build"
+set -euo pipefail
 
-# Check for Emscripten
-if ! command -v emcc &>/dev/null; then
-    echo "Error: emcc not found."
-    echo "Install emsdk:"
-    echo "  git clone https://github.com/emscripten-core/emsdk.git ~/emsdk"
-    echo "  cd ~/emsdk && ./emsdk install latest && ./emsdk activate latest"
-    echo "Then activate:"
-    echo "  source ~/emsdk/emsdk_env.sh"
+cd "$(dirname "$0")"
+
+CMAKE_BUILD_TYPE=Release
+EXTRA_CXX_FLAGS=""
+CLEAN=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1 ;;
+        --debug) CMAKE_BUILD_TYPE=Debug; EXTRA_CXX_FLAGS="-g -O0" ;;
+        *) echo "unknown flag: $arg" >&2; exit 1 ;;
+    esac
+done
+
+if ! command -v emcmake >/dev/null 2>&1; then
+    echo "error: emcmake not found on PATH." >&2
+    echo "Install emscripten (e.g. \`brew install emscripten\`) or activate emsdk first." >&2
     exit 1
 fi
 
-echo "Using emcc: $(which emcc)"
-emcc --version | head -1
+if [[ "$CLEAN" -eq 1 ]]; then
+    rm -rf build
+fi
+mkdir -p build
 
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
+emcmake cmake \
+    -S . \
+    -B build \
+    -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+    ${EXTRA_CXX_FLAGS:+-DCMAKE_CXX_FLAGS="$EXTRA_CXX_FLAGS"}
 
-echo "Configuring with emcmake cmake..."
-emcmake cmake "$SCRIPT_DIR" \
-    -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
 
-echo "Building with emmake make..."
-NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-emmake make -j"$NPROC" onionpir_client
-
-echo ""
-echo "Build complete!"
-echo "  JS:   $BUILD_DIR/onionpir_client.js"
-echo "  WASM: $BUILD_DIR/onionpir_client.wasm"
-echo ""
-echo "Usage in browser:"
-echo "  import createOnionPirModule from './onionpir_client.js';"
-echo "  const Module = await createOnionPirModule();"
-echo "  const client = new Module.OnionPirClient(65536);"
+echo
+echo "Built: $(pwd)/build/onionpir_client.mjs (+ .wasm)"

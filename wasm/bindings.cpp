@@ -1,155 +1,158 @@
-// OnionPIR WASM Client — Emscripten embind bindings.
-// Wraps PirClient directly (bypasses the FFI layer to avoid server.cpp dependencies).
+// OnionPIRv2 WASM client — Emscripten embind bindings.
+//
+// Thin wrapper over the C ABI in src/includes/onion_ffi.h. By going through
+// the same FFI surface as the Rust crate, the on-the-wire format is identical
+// — a query produced in-browser can be answered by any onionpir server
+// (native, Rust, Java), and vice versa.
+
+#include "onion_ffi.h"
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
-#include "client.h"
-#include "pir.h"
-#include "hash_utils.h"
 
-#include <sstream>
-#include <vector>
 #include <cstdint>
+#include <vector>
 
 using namespace emscripten;
 
-// ======================== Helpers ========================
+namespace {
 
-// Convert a stringstream to a JS Uint8Array (copies data out of WASM heap)
-static val stream_to_uint8array(std::stringstream &ss) {
-    ss.seekg(0, std::ios::end);
-    size_t size = ss.tellg();
-    ss.seekg(0);
-    std::vector<uint8_t> buf(size);
-    ss.read(reinterpret_cast<char *>(buf.data()), size);
-    return val(typed_memory_view(buf.size(), buf.data())).call<val>("slice");
+// Copy an OnionBuf into a JS Uint8Array, freeing the C-side buffer.
+val buf_to_uint8array(OnionBuf buf) {
+    if (buf.data == nullptr || buf.len == 0) {
+        onion_free_buf(buf);
+        return val::global("Uint8Array").new_(0);
+    }
+    // typed_memory_view aliases WASM heap; .slice() copies into a JS-owned
+    // Uint8Array so we can safely free buf afterward.
+    val view = val(typed_memory_view(buf.len, buf.data));
+    val copy = view.call<val>("slice");
+    onion_free_buf(buf);
+    return copy;
 }
 
-// Convert a JS Uint8Array (passed as val) to a stringstream
-static std::stringstream uint8array_to_stream(const val &arr) {
-    std::vector<uint8_t> buf = convertJSArrayToNumberVector<uint8_t>(arr);
-    std::stringstream ss;
-    ss.write(reinterpret_cast<const char *>(buf.data()), buf.size());
-    ss.seekg(0);
-    return ss;
+// JS Uint8Array → std::vector<uint8_t> (owned).
+std::vector<uint8_t> uint8array_to_vec(const val &arr) {
+    return convertJSArrayToNumberVector<uint8_t>(arr);
 }
 
-// ======================== OnionPirWasmClient ========================
+}  // namespace
+
+// ============================================================================
+// Client (mirrors the C ABI surface in onion_ffi.h)
+// ============================================================================
 
 class OnionPirWasmClient {
 public:
-    OnionPirWasmClient(uint32_t num_entries)
-        : params_(static_cast<size_t>(num_entries)), client_(params_) {}
+    OnionPirWasmClient() : h_(onion_client_new(0)) {}
+    ~OnionPirWasmClient() { if (h_) onion_client_free(h_); }
 
-    OnionPirWasmClient(uint32_t num_entries, size_t client_id, const seal::SecretKey &sk)
-        : params_(static_cast<size_t>(num_entries)), client_(params_, client_id, sk) {}
+    OnionPirWasmClient(const OnionPirWasmClient &) = delete;
+    OnionPirWasmClient &operator=(const OnionPirWasmClient &) = delete;
 
-    // Get the unique client ID (used for server key registration)
+    // Tagged factory ctor — runs onion_client_new_from_sk and stashes the
+    // resulting handle. emscripten doesn't dispatch static factories cleanly,
+    // so we expose this as a free function below.
+    OnionPirWasmClient(OnionClientHandle h) : h_(h) {}
+
+    // Client id (auto-assigned). Returned as double because JS numbers go up
+    // to 2^53 and client ids are small.
     double id() const {
-        // Return as double since JS numbers can represent up to 2^53 safely,
-        // and client IDs are small.
-        return static_cast<double>(client_.get_client_id());
+        return static_cast<double>(onion_client_id(h_));
     }
 
-    // Export the client's secret key (for creating per-database clients)
-    val exportSecretKey() {
-        std::stringstream ss;
-        client_.get_secret_key().save(ss);
-        return stream_to_uint8array(ss);
+    val galois_keys() {
+        return buf_to_uint8array(onion_client_galois_keys(h_));
     }
 
-    // Generate Galois keys (serialized bytes for the server)
-    val generateGaloisKeys() {
-        std::stringstream ss;
-        client_.create_galois_keys(ss);
-        return stream_to_uint8array(ss);
+    val gsw_key() {
+        return buf_to_uint8array(onion_client_gsw_key(h_));
     }
 
-    // Generate GSW keys (serialized bytes for the server)
-    val generateGswKeys() {
-        auto gsw = client_.generate_gsw_from_key();
-        std::stringstream ss;
-        PirClient::write_gsw_to_stream(gsw, ss);
-        return stream_to_uint8array(ss);
+    val generate_query(uint32_t pt_idx) {
+        return buf_to_uint8array(
+            onion_client_generate_query(h_, static_cast<uint64_t>(pt_idx)));
     }
 
-    // Generate a PIR query for entry at index
-    val generateQuery(uint32_t entry_index) {
-        auto ct = client_.fast_generate_query(static_cast<size_t>(entry_index));
-        std::stringstream ss;
-        PirClient::write_query_to_stream(ct, ss);
-        return stream_to_uint8array(ss);
+    // Decrypt a server response. Input is the bit-packed response bytes
+    // produced by server.answer_query (Rust / native FFI side).
+    // Output is the N-coefficient plaintext as [u32 N (LE)][u64 coeff_0]…
+    val decrypt_response(val response_arr) {
+        auto bytes = uint8array_to_vec(response_arr);
+        return buf_to_uint8array(
+            onion_client_decrypt_response(h_, bytes.data(), bytes.size()));
     }
 
-    // Decrypt server response → plaintext entry bytes
-    val decryptResponse(uint32_t entry_index, val response_arr) {
-        auto resp_stream = uint8array_to_stream(response_arr);
-        auto ct = client_.load_resp_from_stream(resp_stream);
-        auto pt = client_.decrypt_reply(ct);
-        auto entry = client_.get_entry_from_plaintext(
-            static_cast<size_t>(entry_index), pt);
-        return val(typed_memory_view(entry.size(), entry.data())).call<val>("slice");
+    val export_secret_key() {
+        return buf_to_uint8array(onion_client_export_secret_key(h_));
     }
 
 private:
-    PirParams params_;
-    PirClient client_;
+    OnionClientHandle h_;
 };
 
-// ======================== Factory: client from secret key ========================
-
-OnionPirWasmClient *createClientFromSecretKey(uint32_t num_entries, double client_id, val secret_key_arr) {
-    auto sk_stream = uint8array_to_stream(secret_key_arr);
-    seal::SEALContext context(PirParams::init_seal_params());
-    seal::SecretKey sk;
-    sk.load(context, sk_stream);
-    return new OnionPirWasmClient(num_entries, static_cast<size_t>(client_id), sk);
+// Factory: reconstruct a client from a previously-exported secret key.
+// Returns nullptr if the SK bytes are malformed.
+OnionPirWasmClient *create_client_from_sk(double client_id, val sk_arr) {
+    auto bytes = uint8array_to_vec(sk_arr);
+    OnionClientHandle h = onion_client_new_from_sk(
+        0, static_cast<uint64_t>(client_id), bytes.data(), bytes.size());
+    if (h == nullptr) return nullptr;
+    return new OnionPirWasmClient(h);
 }
 
-// ======================== Params info ========================
+// ============================================================================
+// Params info
+// ============================================================================
 
-val paramsInfo(uint32_t num_entries) {
-    PirParams params(static_cast<size_t>(num_entries));
+val params_info() {
+    OnionPirParamsInfo p = onion_params_info(0);
     val obj = val::object();
-    obj.set("numEntries", static_cast<uint32_t>(params.get_num_entries()));
-    obj.set("entrySize", static_cast<uint32_t>(params.get_entry_size()));
-    obj.set("numPlaintexts", static_cast<uint32_t>(params.get_num_pt()));
-    obj.set("fstDimSz", static_cast<uint32_t>(params.get_fst_dim_sz()));
-    obj.set("otherDimSz", static_cast<uint32_t>(params.get_other_dim_sz()));
-    obj.set("coeffValCnt", static_cast<uint32_t>(params.get_coeff_val_cnt()));
+    obj.set("numEntries", static_cast<double>(p.num_entries));
+    obj.set("entrySize", static_cast<double>(p.entry_size));
+    obj.set("numPlaintexts", static_cast<double>(p.num_plaintexts));
+    obj.set("fstDimSz", static_cast<double>(p.fst_dim_sz));
+    obj.set("otherDimSz", static_cast<double>(p.other_dim_sz));
+    obj.set("polyDegree", static_cast<double>(p.poly_degree));
+    obj.set("rnsModCount", static_cast<double>(p.rns_mod_count));
+    obj.set("coeffValCnt", static_cast<double>(p.coeff_val_cnt));
+    obj.set("dbSizeMB", p.db_size_mb);
+    obj.set("physicalSizeMB", p.physical_size_mb);
     return obj;
 }
 
-// ======================== Hash utility wrappers ========================
+// ============================================================================
+// Hash utilities (application-level helpers — pure math, no PIR state)
+// ============================================================================
 
-// splitmix64: accepts and returns double since JS BigInt <-> C++ uint64_t
-// is awkward in embind. Callers should use Number if within safe range,
-// or use the string-based variant for full 64-bit precision.
+#include "hash_utils.h"
+
 double splitmix64_wrapper(double x) {
-    uint64_t input = static_cast<uint64_t>(x);
-    uint64_t result = hash_splitmix64(input);
-    return static_cast<double>(result);
+    return static_cast<double>(hash_splitmix64(static_cast<uint64_t>(x)));
 }
 
 double cuckoo_hash_int_wrapper(uint32_t entry_id, double key, uint32_t num_bins) {
-    uint64_t key_u64 = static_cast<uint64_t>(key);
-    return static_cast<double>(hash_cuckoo_int(entry_id, key_u64, num_bins));
+    return static_cast<double>(
+        hash_cuckoo_int(entry_id, static_cast<uint64_t>(key), num_bins));
 }
 
-// ======================== Embind registrations ========================
+// ============================================================================
+// Embind registrations
+// ============================================================================
 
 EMSCRIPTEN_BINDINGS(onionpir_client) {
     class_<OnionPirWasmClient>("OnionPirClient")
-        .constructor<uint32_t>()
+        .constructor<>()
         .function("id", &OnionPirWasmClient::id)
-        .function("exportSecretKey", &OnionPirWasmClient::exportSecretKey)
-        .function("generateGaloisKeys", &OnionPirWasmClient::generateGaloisKeys)
-        .function("generateGswKeys", &OnionPirWasmClient::generateGswKeys)
-        .function("generateQuery", &OnionPirWasmClient::generateQuery)
-        .function("decryptResponse", &OnionPirWasmClient::decryptResponse);
+        .function("galoisKeys", &OnionPirWasmClient::galois_keys)
+        .function("gswKey", &OnionPirWasmClient::gsw_key)
+        .function("generateQuery", &OnionPirWasmClient::generate_query)
+        .function("decryptResponse", &OnionPirWasmClient::decrypt_response)
+        .function("exportSecretKey", &OnionPirWasmClient::export_secret_key);
 
-    function("createClientFromSecretKey", &createClientFromSecretKey, allow_raw_pointers());
-    function("paramsInfo", &paramsInfo);
+    function("paramsInfo", &params_info);
+    function("createClientFromSecretKey", &create_client_from_sk,
+             allow_raw_pointers());
     function("splitmix64", &splitmix64_wrapper);
     function("cuckooHashInt", &cuckoo_hash_int_wrapper);
     function("buildCuckooBs1", &hash_build_cuckoo_bs1_embind);

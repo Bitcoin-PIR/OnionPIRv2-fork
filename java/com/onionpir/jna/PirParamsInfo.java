@@ -2,10 +2,13 @@ package com.onionpir.jna;
 
 import com.sun.jna.Structure;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * JNA mapping for the C struct:
+ * JNA mapping of {@code OnionPirParamsInfo} declared in
+ * {@code src/includes/onion_ffi.h}.
+ *
  * <pre>
  * typedef struct {
  *     uint64_t num_entries;
@@ -14,33 +17,53 @@ import java.util.List;
  *     uint64_t fst_dim_sz;
  *     uint64_t other_dim_sz;
  *     uint64_t poly_degree;
+ *     uint64_t rns_mod_count;
  *     uint64_t coeff_val_cnt;
  *     double   db_size_mb;
  *     double   physical_size_mb;
- * } CPirParamsInfo;
+ * } OnionPirParamsInfo;
  * </pre>
  */
 public class PirParamsInfo extends Structure {
+    public long numEntries;
+    public long entrySize;
+    public long numPlaintexts;
+    public long fstDimSz;
+    public long otherDimSz;
+    public long polyDegree;
+    public long rnsModCount;
+    public long coeffValCnt;
+    public double dbSizeMb;
+    public double physicalSizeMb;
 
-    public long num_entries;
-    public long entry_size;
-    public long num_plaintexts;
-    public long fst_dim_sz;
-    public long other_dim_sz;
-    public long poly_degree;
-    public long coeff_val_cnt;
-    public double db_size_mb;
-    public double physical_size_mb;
+    public PirParamsInfo() {}
 
     @Override
     protected List<String> getFieldOrder() {
-        return List.of(
-            "num_entries", "entry_size", "num_plaintexts",
-            "fst_dim_sz", "other_dim_sz", "poly_degree",
-            "coeff_val_cnt", "db_size_mb", "physical_size_mb"
+        return Arrays.asList(
+                "numEntries", "entrySize", "numPlaintexts",
+                "fstDimSz", "otherDimSz",
+                "polyDegree", "rnsModCount", "coeffValCnt",
+                "dbSizeMb", "physicalSizeMb"
         );
     }
 
-    public static class ByValue extends PirParamsInfo implements Structure.ByValue {
+    @Override
+    public String toString() {
+        return "PirParamsInfo{" +
+                "numEntries=" + numEntries +
+                ", entrySize=" + entrySize +
+                ", numPlaintexts=" + numPlaintexts +
+                ", fstDimSz=" + fstDimSz +
+                ", otherDimSz=" + otherDimSz +
+                ", polyDegree=" + polyDegree +
+                ", rnsModCount=" + rnsModCount +
+                ", coeffValCnt=" + coeffValCnt +
+                ", dbSizeMb=" + dbSizeMb +
+                ", physicalSizeMb=" + physicalSizeMb +
+                '}';
     }
+
+    /** Pass-by-value variant — required by JNA for direct struct return types. */
+    public static class ByValue extends PirParamsInfo implements Structure.ByValue {}
 }

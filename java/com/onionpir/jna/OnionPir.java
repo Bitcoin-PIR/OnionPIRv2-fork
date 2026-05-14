@@ -1,36 +1,29 @@
 package com.onionpir.jna;
 
 /**
- * Static utilities for the OnionPIR JNA binding.
+ * Static utilities and the entry point to the {@link OnionPirLibrary} singleton.
  */
 public final class OnionPir {
+    private OnionPir() {}
 
-    private static final OnionPirLibrary LIB = OnionPirLibrary.INSTANCE;
-
-    private OnionPir() {
-    }
-
-    /**
-     * Get PIR parameter info for a database with the given number of entries.
-     * Pass 0 to use the compiled-in default.
-     */
+    /** Inspect the compiled-in PIR shape. {@code numEntries==0} → defaults. */
     public static PirParamsInfo.ByValue paramsInfo(long numEntries) {
-        return LIB.onion_get_params_info(numEntries);
+        return OnionPirLibrary.INSTANCE.onion_params_info(numEntries);
     }
 
     /**
-     * Convert a native {@link OnionBuf} to a Java {@code byte[]} and free
-     * the native buffer. This mirrors the Rust {@code buf_to_vec()} helper:
-     * copy the data, then immediately call {@code onion_free_buf()}.
+     * Copy the buffer payload into a Java {@code byte[]} and free the native
+     * allocation. Always do this for {@code OnionBuf.ByValue} returned from
+     * the FFI to avoid leaks.
      */
-    static byte[] bufToBytes(OnionBuf.ByValue buf) {
-        if (buf.data == null || buf.len.longValue() == 0) {
-            LIB.onion_free_buf(buf);
-            return new byte[0];
+    public static byte[] bufToBytes(OnionBuf.ByValue buf) {
+        try {
+            if (buf.data == null || buf.len == 0) {
+                return new byte[0];
+            }
+            return buf.data.getByteArray(0, (int) buf.len);
+        } finally {
+            OnionPirLibrary.INSTANCE.onion_free_buf(buf);
         }
-        int length = buf.len.intValue();
-        byte[] result = buf.data.getByteArray(0, length);
-        LIB.onion_free_buf(buf);
-        return result;
     }
 }

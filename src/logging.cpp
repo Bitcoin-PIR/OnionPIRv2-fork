@@ -1,9 +1,18 @@
 #include "logging.h"
 #include <iostream>
 
-// Singleton instance getter
+// Per-thread instance getter.
+//
+// Was `static TimerLogger instance` — but the macros (TIME_START / TIME_END
+// etc., 36 hits per answer_query in server.cpp) mutate the logger's
+// unordered_map state on every call, racing under parallel answer_query
+// from rayon-style downstream consumers. `thread_local` keeps each thread's
+// timings isolated. The PRETTY_PRINT()/PRINT_AVERAGE_RESULTS() debug
+// helpers only see the calling thread's timings — that's fine because
+// the test harness calls them from the main thread (same thread that
+// drove the experiments).
 TimerLogger &TimerLogger::getInstance() {
-  static TimerLogger instance;
+  thread_local TimerLogger instance;
   return instance;
 }
 

@@ -12,16 +12,22 @@
 // LRU eviction policy, so a long-running server doesn't grow unboundedly
 // as clients come and go.
 //
-// Thread safety: NOT thread-safe. Callers must serialize key registration
-// against query processing. Concurrent read-only access (lookups during
-// fast_expand_qry) from multiple threads is safe only if no concurrent
-// mutation is occurring.
+// Thread safety: every public method is internally serialized by mu_.
+// However, get_galois_keys / get_gsw_key return `const &` into the
+// internal maps — once they return, the caller-held reference is no
+// longer protected by mu_. The caller MUST keep the keystore stable
+// for the entire lifetime of that reference (no concurrent set_* /
+// remove / eviction that could touch the same client_id). The intended
+// pattern: registration runs on a setup thread, query processing on
+// worker threads; the two never overlap in time, but multiple worker
+// threads CAN run get_* + touch() concurrently against the same client.
 
 #include "bv_keyswitch.h"
 #include "gsw.h"
 
 #include <cstddef>
 #include <list>
+#include <mutex>
 #include <unordered_map>
 
 class SharedKeyStore {
@@ -73,6 +79,10 @@ private:
     // iterator into lru_order_ for O(1) splice on touch().
     std::list<size_t>                                              lru_order_;
     std::unordered_map<size_t, std::list<size_t>::iterator>        lru_pos_;
+
+    // Serializes every public method (and the private helpers they call).
+    // `mutable` so const accessors can take the lock too.
+    mutable std::mutex mu_;
 
     // Called on every set_* and touch(). If size exceeds MAX_CLIENTS,
     // pops the LRU client and erases its keys.

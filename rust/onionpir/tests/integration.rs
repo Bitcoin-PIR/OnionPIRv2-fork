@@ -467,3 +467,80 @@ fn per_instance_num_pt_varies() {
              per-instance shape isn't flowing through",
             small_bytes, default_physical_bytes);
 }
+
+/// `Server::answer_query` must be safe to call from multiple threads
+/// against different `Server` instances that share one `KeyStore`. This
+/// pins the contract that the engine has no unsynchronized process-global
+/// state on the answer_query hot path — covers four known race sources:
+///
+///   1. `g_scratch` in bv_keyswitch.cpp (now thread_local).
+///   2. NTT cache in utils.cpp::get_ntt (now thread_local).
+///   3. TimerLogger singleton in logging.cpp (now thread_local).
+///   4. SharedKeyStore::touch() LRU splice (now mutex-protected).
+///
+/// Pre-patch this test fails either with garbled PIR responses (the
+/// keyswitch scratch race causes silent ciphertext corruption) or an
+/// outright crash (the unordered_map races trip ASan / glibc).
+#[test]
+fn parallel_answer_query_via_shared_keystore() {
+    use std::sync::Arc;
+
+    const N_SERVERS: usize = 8;
+    const SMALL_DB: u64 = 1024;
+    const PT_IDX: u64 = 5;
+
+    let store = Arc::new(KeyStore::new());
+    let client = Client::new(SMALL_DB);
+    let client_id = client.id();
+    store.set_galois_keys(client_id, &client.galois_keys());
+    store.set_gsw_key(client_id, &client.gsw_key());
+
+    // Build N independent servers, each with its own random DB, all
+    // sharing the one keystore. Attach the store BEFORE the serial
+    // golden run so both serial and parallel paths use the same key
+    // source.
+    let mut servers: Vec<Server> = Vec::with_capacity(N_SERVERS);
+    let mut goldens: Vec<Vec<u8>> = Vec::with_capacity(N_SERVERS);
+    let queries: Vec<Vec<u8>> = (0..N_SERVERS).map(|_| client.generate_query(PT_IDX)).collect();
+    for _ in 0..N_SERVERS {
+        let mut s = Server::new(SMALL_DB);
+        s.gen_data(&[PT_IDX]);
+        // SAFETY: store outlives every server (held in Arc until the end
+        // of this test function).
+        unsafe { s.set_key_store(Some(&*store)); }
+        // Compute golden serially through the store — this is the
+        // reference the parallel run must match exactly.
+        let q = client.generate_query(PT_IDX);
+        let resp = s.answer_query(client_id, &q);
+        goldens.push(client.decrypt_response(&resp));
+        servers.push(s);
+    }
+
+    // Now run N answer_query calls in parallel. std::thread::scope lets
+    // each worker borrow its own `&mut Server` from the outer Vec — no
+    // unsafe needed at the Rust level.
+    let queries_ref = &queries;
+    let results: Vec<Vec<u8>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = servers.iter_mut().enumerate()
+            .map(|(i, s)| {
+                scope.spawn(move || s.answer_query(client_id, &queries_ref[i]))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    // Every parallel response must decrypt to the same plaintext the
+    // serial answer_query produced for that server. A race on g_scratch
+    // / the NTT cache shows up here as a mismatch (silent corruption,
+    // not a panic).
+    for (i, resp) in results.iter().enumerate() {
+        assert!(!resp.is_empty(), "server {} returned empty response", i);
+        let pt = client.decrypt_response(resp);
+        assert_eq!(pt, goldens[i],
+                   "parallel run on server {} produced a different plaintext \
+                    than the serial run — likely race-corrupted ciphertext",
+                   i);
+    }
+    // Keystore still has exactly one client after all the parallel touches.
+    assert_eq!(store.size(), 1);
+}

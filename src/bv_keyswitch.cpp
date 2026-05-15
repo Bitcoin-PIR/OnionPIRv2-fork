@@ -277,13 +277,23 @@ BvGaloisKeys gen_bv_galois_keys(const PirParams &pir_params,
 // Server-side apply
 // ----------------------------------------------------------------------------
 
-// scratch reused across calls to bv_apply_galois_inplace.
+// Scratch reused across calls to bv_apply_galois_inplace.
+//
+// Thread-local because parallel PirServer::answer_query (downstream
+// rayon::par_iter_mut over per-group servers) hits bv_apply_galois_inplace
+// concurrently on different ciphertexts but the same params shape. With a
+// process-global scratch, the writes via the cached pointers race; the
+// matmul produces silent ciphertext corruption rather than panicking.
+// Per-thread scratch is the smallest correct fix — see
+// REQUEST_THREAD_SAFETY_FROM_BITCOIN_PIR.md §2.
+//
+// Memory cost: ~(5 + L_KS) * N * 8 B per thread (≈144 KB at N=2048, L_KS=4).
 namespace {
 struct GaloisScratch {
   std::vector<uint64_t> c0_perm, c1_perm, delta_a, delta_b, tmp;
   std::vector<uint64_t> digits;  // L_KS contiguous N-blocks (row-major)
 };
-static GaloisScratch g_scratch;
+thread_local GaloisScratch g_scratch;
 }  // namespace
 
 // K=1: signed gadget decomposition (existing path, tighter noise).

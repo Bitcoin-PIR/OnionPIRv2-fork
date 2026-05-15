@@ -17,10 +17,15 @@ size_t g_custom_N = 0;
 uint64_t g_custom_q = 0;
 uint64_t g_custom_root = 0;
 
-// Thread-local cache of HEXL NTT objects keyed by (N, q). Each thread owns
-// its own copy; no locking needed. Most (N, q) used here are prime moduli;
-// HEXL's default ctor searches for a primitive root. Composite q falls back
-// to the registered custom root.
+// Per-thread cache of HEXL NTT objects keyed by (N, q). The `cache` itself
+// is `thread_local` so concurrent calls from parallel answer_query don't
+// race on the `find` / `emplace` pair. Memory cost is bounded: each
+// thread holds at most a handful of (N, q) pairs (default config has 1).
+// Most (N, q) used here are prime moduli; HEXL's default ctor searches
+// for a primitive root. Composite q falls back to the registered custom
+// root (`g_custom_*` — written once during PirParams construction, read
+// thereafter; safe under the standard "build server before answering"
+// init order).
 intel::hexl::NTT &get_ntt(size_t N, uint64_t q) {
   struct Key {
     size_t N; uint64_t q;
@@ -31,7 +36,7 @@ intel::hexl::NTT &get_ntt(size_t N, uint64_t q) {
       return std::hash<size_t>()(k.N) ^ (std::hash<uint64_t>()(k.q) * 0x9E3779B97F4A7C15ULL);
     }
   };
-  static std::unordered_map<Key, std::unique_ptr<intel::hexl::NTT>, Hash> cache;
+  thread_local std::unordered_map<Key, std::unique_ptr<intel::hexl::NTT>, Hash> cache;
   auto it = cache.find({N, q});
   if (it != cache.end()) return *it->second;
   auto ntt = (N == g_custom_N && q == g_custom_q)

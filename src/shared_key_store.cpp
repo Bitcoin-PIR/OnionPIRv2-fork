@@ -4,13 +4,19 @@
 #include <string>
 #include <utility>
 
+// All public methods take mu_. promote_to_front / evict_if_full are
+// private helpers called only from already-locked public methods, so they
+// don't lock themselves (would deadlock).
+
 void SharedKeyStore::set_galois_keys(size_t client_id, bvks::BvGaloisKeys keys) {
+    std::lock_guard<std::mutex> lock(mu_);
     galois_[client_id] = std::move(keys);
     promote_to_front(client_id);
     evict_if_full();
 }
 
 void SharedKeyStore::set_gsw_key(size_t client_id, GSWCt key) {
+    std::lock_guard<std::mutex> lock(mu_);
     gsw_[client_id] = std::move(key);
     promote_to_front(client_id);
     evict_if_full();
@@ -18,16 +24,21 @@ void SharedKeyStore::set_gsw_key(size_t client_id, GSWCt key) {
 
 const bvks::BvGaloisKeys &
 SharedKeyStore::get_galois_keys(size_t client_id) const {
+    std::lock_guard<std::mutex> lock(mu_);
     auto it = galois_.find(client_id);
     if (it == galois_.end()) {
         throw std::out_of_range(
             "SharedKeyStore: no galois keys for client_id "
             + std::to_string(client_id));
     }
+    // Reference outlives the lock — caller must keep the store stable for
+    // its lifetime (see class header doc). Intended pattern: registration
+    // and query processing don't overlap in time.
     return it->second;
 }
 
 const GSWCt &SharedKeyStore::get_gsw_key(size_t client_id) const {
+    std::lock_guard<std::mutex> lock(mu_);
     auto it = gsw_.find(client_id);
     if (it == gsw_.end()) {
         throw std::out_of_range(
@@ -38,10 +49,12 @@ const GSWCt &SharedKeyStore::get_gsw_key(size_t client_id) const {
 }
 
 bool SharedKeyStore::has_client(size_t client_id) const {
+    std::lock_guard<std::mutex> lock(mu_);
     return galois_.count(client_id) && gsw_.count(client_id);
 }
 
 void SharedKeyStore::touch(size_t client_id) {
+    std::lock_guard<std::mutex> lock(mu_);
     // Only LRU-promote known clients. Touching an unknown id is a no-op
     // — callers shouldn't insert phantom entries via touch.
     if (lru_pos_.count(client_id)) {
@@ -50,6 +63,7 @@ void SharedKeyStore::touch(size_t client_id) {
 }
 
 void SharedKeyStore::remove(size_t client_id) {
+    std::lock_guard<std::mutex> lock(mu_);
     galois_.erase(client_id);
     gsw_.erase(client_id);
     auto it = lru_pos_.find(client_id);
@@ -60,6 +74,7 @@ void SharedKeyStore::remove(size_t client_id) {
 }
 
 size_t SharedKeyStore::size() const {
+    std::lock_guard<std::mutex> lock(mu_);
     return lru_order_.size();
 }
 

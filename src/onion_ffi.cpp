@@ -123,10 +123,30 @@ void serialize_rlwe_ct(const RlweCt &ct, std::vector<uint8_t> &out) {
     w.u64_array(ct.c1.data(), poly);
 }
 
+// Defense-in-depth: reject implausibly large counts up front so a
+// malformed / corrupt blob fails with an immediate, descriptive throw
+// instead of stalling for tens of seconds inside vector::assign + malloc
+// before the Reader's short-read guard finally trips. The caps below are
+// >50x any value any shipped ACTIVE_CONFIG produces (poly = N*K <= 16384;
+// L_KS, expansion-level key counts are < 100), so no well-formed input is
+// ever rejected. All call sites already run under a catch(...) so a throw
+// here is just a fast, clean failure.
+void check_count(uint32_t value, uint32_t cap, const char *what) {
+    if (value > cap) {
+        throw std::runtime_error(std::string("ffi deserialize: implausible ")
+                                 + what + " (" + std::to_string(value) + ")");
+    }
+}
+// poly / row_size / sk word counts are all N*K — well under 2^20.
+constexpr uint32_t kMaxPoly  = 1u << 20;
+// num_keys (expansion-level galois keys) and num_rows (2*l) are tiny.
+constexpr uint32_t kMaxCount = 1u << 10;
+
 RlweCt deserialize_rlwe_ct(const uint8_t *data, size_t len) {
     Reader r(data, len);
     const uint32_t ntt = r.u32();
     const uint32_t poly = r.u32();
+    check_count(poly, kMaxPoly, "rlwe poly");
     RlweCt ct;
     ct.ntt_form = (ntt != 0);
     ct.c0.assign(poly, 0);
@@ -156,6 +176,7 @@ void serialize_bv_galois_keys(const bvks::BvGaloisKeys &keys,
 bvks::BvGaloisKeys deserialize_bv_galois_keys(const uint8_t *data, size_t len) {
     Reader r(data, len);
     const uint32_t num_keys = r.u32();
+    check_count(num_keys, kMaxCount, "num_keys");
     bvks::BvGaloisKeys keys;
     keys.keys.reserve(num_keys);
     for (uint32_t i = 0; i < num_keys; i++) {
@@ -163,6 +184,12 @@ bvks::BvGaloisKeys deserialize_bv_galois_keys(const uint8_t *data, size_t len) {
         ksk.galois_k = r.u32();
         const uint32_t num_cts = r.u32();
         const uint32_t poly = r.u32();
+        check_count(num_cts, kMaxCount, "num_cts");
+        check_count(poly, kMaxPoly, "galois key poly");
+        // Fail fast on a truncated body before allocating num_cts vectors.
+        if (!r.has(static_cast<size_t>(num_cts) * poly * 2 * sizeof(uint64_t))) {
+            throw std::runtime_error("ffi deserialize: truncated bv galois key body");
+        }
         ksk.cts.resize(num_cts);
         for (uint32_t j = 0; j < num_cts; j++) {
             ksk.cts[j].a.assign(poly, 0);
@@ -191,6 +218,12 @@ GSWCt deserialize_gsw_ct(const uint8_t *data, size_t len) {
     Reader r(data, len);
     const uint32_t num_rows = r.u32();
     const uint32_t row_size = r.u32();
+    check_count(num_rows, kMaxCount, "num_rows");
+    check_count(row_size, kMaxPoly, "gsw row_size");
+    // Fail fast on a truncated body before allocating num_rows vectors.
+    if (!r.has(static_cast<size_t>(num_rows) * row_size * sizeof(uint64_t))) {
+        throw std::runtime_error("ffi deserialize: truncated gsw body");
+    }
     GSWCt gsw(num_rows);
     for (uint32_t i = 0; i < num_rows; i++) {
         gsw[i].assign(row_size, 0);
@@ -214,6 +247,7 @@ void serialize_secret_key(const RlweSk &sk, std::vector<uint8_t> &out) {
 RlweSk deserialize_secret_key(const uint8_t *data, size_t len) {
     Reader r(data, len);
     const uint32_t n = r.u32();
+    check_count(n, kMaxPoly, "secret key word count");
     RlweSk sk;
     sk.data.assign(n, 0);
     r.u64_array(sk.data.data(), n);

@@ -1,5 +1,6 @@
 #include "tests.h"
 #include "bv_keyswitch.h"
+#include <sstream>
 
 void PirTest::test_pir() {
   print_func_name(__FUNCTION__);

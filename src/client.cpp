@@ -6,6 +6,7 @@
 #include "hexl/hexl.hpp"
 #include <cassert>
 #include <random>
+#include <sstream>
 
 
 // Build the K-limb sk lazily because its construction depends on PirParams.

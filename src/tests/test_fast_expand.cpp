@@ -1,4 +1,5 @@
 #include "tests.h"
+#include <sstream>
 
 void PirTest::test_fast_expand_query() {
   print_func_name(__FUNCTION__);

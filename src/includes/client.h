@@ -5,6 +5,7 @@
 #include "bv_keyswitch.h"
 #include "rlwe.h"
 #include <random>
+#include <sstream>
 
 class PirClient {
 public:

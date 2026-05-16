@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <random>
+#include <sstream>
 #include <bit>
 #include <cstdint>
 #include <unordered_set>

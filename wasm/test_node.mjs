@@ -12,7 +12,9 @@ import createOnionPir from "./build/onionpir_client.mjs";
 
 const m = await createOnionPir();
 
-const info = m.paramsInfo();
+// `0` → compiled-in DBConsts default shape; fine for an API smoke test
+// (production callers pass the real per-database entry count).
+const info = m.paramsInfo(0);
 console.log("paramsInfo:");
 console.log("  numEntries:", info.numEntries);
 console.log("  numPlaintexts:", info.numPlaintexts);
@@ -26,7 +28,7 @@ if (info.polyDegree !== 2048 && info.polyDegree !== 4096) {
 }
 
 // Client
-const client = new m.OnionPirClient();
+const client = new m.OnionPirClient(0);
 console.log("\nclient.id():", client.id());
 
 const galois = client.galoisKeys();
@@ -42,13 +44,13 @@ client.delete();
 
 // Secret-key export/import round-trip. Make sure the bytes look plausible
 // and a restored client reports the same id.
-const sender = new m.OnionPirClient();
+const sender = new m.OnionPirClient(0);
 const sid = sender.id();
 const sk = sender.exportSecretKey();
 console.log("\nexportSecretKey: %d bytes (sk_id=%d)", sk.length, sid);
 if (sk.length < 16) throw new Error(`unexpectedly small SK blob: ${sk.length}`);
 
-const restored = m.createClientFromSecretKey(sid, sk);
+const restored = m.createClientFromSecretKey(0, sid, sk);
 if (!restored) throw new Error("createClientFromSecretKey returned null");
 if (restored.id() !== sid) {
     throw new Error(`id round-trip failed: ${sid} -> ${restored.id()}`);

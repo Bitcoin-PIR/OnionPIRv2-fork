@@ -44,7 +44,15 @@ std::vector<uint8_t> uint8array_to_vec(const val &arr) {
 
 class OnionPirWasmClient {
 public:
-    OnionPirWasmClient() : h_(onion_client_new(0)) {}
+    // `num_entries` is the requested (un-padded) entry count of the
+    // OnionPIR database this client will query. INDEX, CHUNK and each
+    // Merkle-sibling level are separate databases of different sizes, so
+    // the caller must pass the matching one (see web/src/onionpir_client.ts
+    // and the native onion.rs::num_entries_for_level). `0` falls back to
+    // the compiled-in DBConsts default — only correct if the DB happens
+    // to match it, which it generally will not as the chain grows.
+    explicit OnionPirWasmClient(double num_entries)
+        : h_(onion_client_new(static_cast<uint64_t>(num_entries))) {}
     ~OnionPirWasmClient() { if (h_) onion_client_free(h_); }
 
     OnionPirWasmClient(const OnionPirWasmClient &) = delete;
@@ -92,11 +100,17 @@ private:
 };
 
 // Factory: reconstruct a client from a previously-exported secret key.
-// Returns nullptr if the SK bytes are malformed.
-OnionPirWasmClient *create_client_from_sk(double client_id, val sk_arr) {
+// `num_entries` sizes the client to the OnionPIR database it will query
+// (INDEX / CHUNK / Merkle-sibling level — each a different size). The
+// secret key itself is size-independent, so one keygen client's SK can
+// seed per-level clients of any size. Returns nullptr if the SK bytes
+// are malformed.
+OnionPirWasmClient *create_client_from_sk(double num_entries, double client_id,
+                                          val sk_arr) {
     auto bytes = uint8array_to_vec(sk_arr);
     OnionClientHandle h = onion_client_new_from_sk(
-        0, static_cast<uint64_t>(client_id), bytes.data(), bytes.size());
+        static_cast<uint64_t>(num_entries),
+        static_cast<uint64_t>(client_id), bytes.data(), bytes.size());
     if (h == nullptr) return nullptr;
     return new OnionPirWasmClient(h);
 }
@@ -105,8 +119,8 @@ OnionPirWasmClient *create_client_from_sk(double client_id, val sk_arr) {
 // Params info
 // ============================================================================
 
-val params_info() {
-    OnionPirParamsInfo p = onion_params_info(0);
+val params_info(double num_entries) {
+    OnionPirParamsInfo p = onion_params_info(static_cast<uint64_t>(num_entries));
     val obj = val::object();
     obj.set("numEntries", static_cast<double>(p.num_entries));
     obj.set("entrySize", static_cast<double>(p.entry_size));
@@ -142,7 +156,7 @@ double cuckoo_hash_int_wrapper(uint32_t entry_id, double key, uint32_t num_bins)
 
 EMSCRIPTEN_BINDINGS(onionpir_client) {
     class_<OnionPirWasmClient>("OnionPirClient")
-        .constructor<>()
+        .constructor<double>()
         .function("id", &OnionPirWasmClient::id)
         .function("galoisKeys", &OnionPirWasmClient::galois_keys)
         .function("gswKey", &OnionPirWasmClient::gsw_key)

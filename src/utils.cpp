@@ -362,6 +362,16 @@ size_t utils::roundup_div(const size_t numerator, const size_t denominator) {
 //   fst_dim_sz · 2^(num_dims - 1)
 // since each "other" dim is binary and doubles the addressable plaintexts.
 //
+// Single-dimension fast path: when target_num_pt <= capacity the database
+// fits in one dimension, and fst_dim_sz is set to the *exact* request rather
+// than padded up to capacity. With other_dim_sz = 1 the first dimension IS
+// the database — there is no second dimension whose matmul partner the
+// FST_DIM_POW2 policy exists to keep cheap — so padding only inflates storage
+// and the per-query expansion + matmul cost. Expansion (fast_expand_qry), the
+// first-dim matmul (level_mat_mat) and the num_dims==1 branch of
+// evaluate_other_dim all accept an arbitrary fst_dim_sz in [1, capacity];
+// nothing downstream requires a power of two.
+//
 // Loop walks num_dims upward and returns the smallest one that meets target.
 // max_num_dims is just a loop bound; the inner `reserved >= capacity` break
 // is the real correctness guard against size_t underflow.
@@ -373,6 +383,13 @@ size_t utils::roundup_div(const size_t numerator, const size_t denominator) {
 // Returns: {fst_dim_sz, num_dims}.
 std::pair<size_t, size_t> utils::calculate_db_shape(size_t target_num_pt, size_t l, size_t h) {
   const size_t capacity = size_t{1} << h;
+
+  // Single-dimension fast path — fst_dim_sz is the exact request (see the
+  // header comment above). target_num_pt == 0 is left to the loop below.
+  if (target_num_pt > 0 && target_num_pt <= capacity) {
+    return {target_num_pt, 1};
+  }
+
   const size_t max_num_dims = 1 + (capacity - 1) / l;
   for (size_t num_dims = 1; num_dims <= max_num_dims + 1; num_dims++) {
     const size_t reserved = l * (num_dims - 1);

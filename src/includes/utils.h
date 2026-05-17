@@ -253,10 +253,13 @@ void sample_ternary(uint64_t *out, size_t N, uint64_t q, std::mt19937_64 &rng);
 // Pure integer arithmetic — no FP precision loss. Matches Spiral's rescale.
 uint64_t rescale(uint64_t a, uint64_t inp_mod, uint64_t out_mod);
 
-// Given the target number of plaintexts, GSW ell for further dims, and the expansion tree height,
-// calculate the database shape that maximizes the first dimension size under the constraints:
-// (1) fst_dim_sz + l*(num_dims-1) = 2^h
+// Given the target number of plaintexts, GSW ell for further dims, and the
+// expansion tree height, calculate the database shape under the constraints:
+// (1) fst_dim_sz + l*(num_dims-1) <= 2^h
 // (2) fst_dim_sz * 2^{num_dims-1} >= target_num_pt
+// Multi-dimension shapes (target_num_pt > 2^h) maximize the first dimension
+// per the FST_DIM_POW2 policy. A single-dimension DB (target_num_pt <= 2^h)
+// gets fst_dim_sz = target_num_pt exactly with num_dims = 1 — no padding.
 // Returns {fst_dim_sz, num_dims}.
 std::pair<size_t, size_t> calculate_db_shape(size_t target_num_pt, size_t l, size_t h);
 

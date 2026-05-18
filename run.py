@@ -10,8 +10,8 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, "outputs")
 BINARY = os.path.join(BUILD_DIR, "Onion-PIR")
 
 
-# Short aliases → ACTIVE_CONFIG values. See src/includes/database_constants.h
-# for per-config meanings.
+# Short aliases → ACTIVE_CONFIG values. See
+# rust/onionpir/cpp/includes/database_constants.h for per-config meanings.
 CONFIG_ALIASES = {
     "k1":            "CONFIG_N2048_K1",
     "n2048_k1":      "CONFIG_N2048_K1",
@@ -83,7 +83,8 @@ def main():
         "-c", "--config", default="k1_comp",
         help=("Build configuration (default: k1_comp). Aliases: "
               + ", ".join(sorted(CONFIG_ALIASES))
-              + ". See src/includes/database_constants.h for per-config meanings."),
+              + ". See rust/onionpir/cpp/includes/database_constants.h "
+                "for per-config meanings."),
     )
     args = parser.parse_args()
 

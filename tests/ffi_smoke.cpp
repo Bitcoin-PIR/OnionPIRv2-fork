@@ -1,8 +1,9 @@
 // FFI smoke test for libonionpir.a — exercises the full PIR round-trip
-// through the C ABI (mirrors src/tests/test_pir.cpp but via onion_ffi.h).
+// through the C ABI (mirrors rust/onionpir/cpp/tests/test_pir.cpp but via
+// onion_ffi.h).
 //
 // Build (from repo root, after `make onionpir` under build-ffi):
-//   c++ -std=c++17 -O2 -I src/includes tests/ffi_smoke.cpp \
+//   c++ -std=c++17 -O2 -I rust/onionpir/cpp/includes tests/ffi_smoke.cpp \
 //       build-ffi/libonionpir.a -o build-ffi/ffi_smoke
 // Run:
 //   ./build-ffi/ffi_smoke

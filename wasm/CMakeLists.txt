@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.13)
 #
 # Toolchain notes:
 # - HEXL is x86-only, so the WASM build always uses the scalar shim at
-#   src/hexl_compat/. There's no way to flip this off here.
+#   rust/onionpir/cpp/hexl_compat/. There's no way to flip this off here.
 # - We compile a client-only WASM module: upstream's client-side sources +
 #   bv_keyswitch + supporting infrastructure, plus our C ABI (onion_ffi.cpp)
 #   so the embind layer in bindings.cpp can reuse the same wire format the
@@ -35,20 +35,23 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fexceptions")
 add_compile_definitions(_BENCHMARK)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The C++ engine now lives inside the onionpir crate (rust/onionpir/cpp/) so
+# `cargo vendor` can ship it as a self-contained crate.
+set(CPP_ROOT "${REPO_ROOT}/rust/onionpir/cpp")
 
 # Upstream client-side sources. server.cpp / matrix.cpp are intentionally
 # excluded — the WASM module is client-only.
 set(ONIONPIR_CLIENT_SRC
-    "${REPO_ROOT}/src/bv_keyswitch.cpp"
-    "${REPO_ROOT}/src/client.cpp"
-    "${REPO_ROOT}/src/gsw.cpp"
-    "${REPO_ROOT}/src/logging.cpp"
-    "${REPO_ROOT}/src/pir.cpp"
-    "${REPO_ROOT}/src/rlwe.cpp"
-    "${REPO_ROOT}/src/utils.cpp"
-    "${REPO_ROOT}/src/hexl_shim.cpp"      # scalar fallback (HEXL is x86-only)
-    "${REPO_ROOT}/src/shared_key_store.cpp"  # pulled in by server.h transitively
-    "${REPO_ROOT}/src/onion_ffi.cpp"      # C ABI — bindings.cpp calls into it
+    "${CPP_ROOT}/bv_keyswitch.cpp"
+    "${CPP_ROOT}/client.cpp"
+    "${CPP_ROOT}/gsw.cpp"
+    "${CPP_ROOT}/logging.cpp"
+    "${CPP_ROOT}/pir.cpp"
+    "${CPP_ROOT}/rlwe.cpp"
+    "${CPP_ROOT}/utils.cpp"
+    "${CPP_ROOT}/hexl_shim.cpp"      # scalar fallback (HEXL is x86-only)
+    "${CPP_ROOT}/shared_key_store.cpp"  # pulled in by server.h transitively
+    "${CPP_ROOT}/onion_ffi.cpp"      # C ABI — bindings.cpp calls into it
 )
 
 # Module target.
@@ -59,8 +62,8 @@ add_executable(onionpir_client
 )
 
 target_include_directories(onionpir_client PRIVATE
-    "${REPO_ROOT}/src/includes"
-    "${REPO_ROOT}/src/hexl_compat"        # scalar hexl/hexl.hpp shim header
+    "${CPP_ROOT}/includes"
+    "${CPP_ROOT}/hexl_compat"             # scalar hexl/hexl.hpp shim header
     "${CMAKE_CURRENT_SOURCE_DIR}"         # for hash_utils.h
 )
 

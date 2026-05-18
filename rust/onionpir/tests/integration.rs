@@ -351,7 +351,7 @@ fn shared_database_identity_index_table() {
         pt
     };
 
-    // Read the file. Skip the 48-byte header (see src/server.cpp PREPROC_*).
+    // Read the file. Skip the 48-byte header (see cpp/server.cpp PREPROC_*).
     let raw = std::fs::read(&tmp_path).expect("read saved DB");
     assert!(raw.len() > 48);
     let payload = &raw[48..];

@@ -30,7 +30,7 @@
 use std::os::raw::c_void;
 
 // ============================================================================
-// Raw FFI declarations (mirror src/includes/onion_ffi.h)
+// Raw FFI declarations (mirror cpp/includes/onion_ffi.h)
 // ============================================================================
 
 #[repr(C)]

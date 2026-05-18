@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HEADER="$PROJECT_DIR/src/includes/database_constants.h"
+HEADER="$PROJECT_DIR/rust/onionpir/cpp/includes/database_constants.h"
 
 # --- Tunables (overridable via env) ---
 DB_SIZE_MB="${DB_SIZE_MB:-1024}"   # database size for all runs

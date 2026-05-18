@@ -25,9 +25,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# -O3 for runtime speed; -fexceptions for the throw/catch in onion_ffi.cpp's
-# error paths (Emscripten disables them by default and aborts on throw).
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fexceptions")
+# -O3 for runtime speed; -msimd128 enables WebAssembly SIMD128 — baseline in
+# every modern browser (Chrome 91+, Firefox 89+, Safari 16.4+) and Node 16+ —
+# so the compiler autovectorizes and the wasm_simd128 eltwise path in
+# cpp/hexl_shim.cpp is emitted; -fexceptions for the throw/catch in
+# onion_ffi.cpp's error paths (Emscripten disables them by default and aborts
+# on throw).
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -msimd128 -fexceptions")
 
 # Define _BENCHMARK so the macros in includes/logging.h and includes/utils.h
 # (DEBUG_PRINT, PRINT_INT_ARRAY) resolve to no-ops. Without this they're

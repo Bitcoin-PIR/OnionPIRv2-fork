@@ -81,6 +81,8 @@ target_include_directories(onionpir_client PRIVATE
 #   MODULARIZE=1                 — emit an ES-module-style factory
 #   EXPORT_ES6=1                 — produce ES module syntax
 #   DISABLE_EXCEPTION_CATCHING=0 — let the throws from onion_ffi.cpp escape
+#   DYNAMIC_EXECUTION=0          — forbid eval/new Function for strict CSP
+#   EMBIND_AOT=1                 — pre-generate embind invokers needed above
 target_link_options(onionpir_client PRIVATE
     "--bind"
     "-sENVIRONMENT=web,worker,node"
@@ -91,6 +93,8 @@ target_link_options(onionpir_client PRIVATE
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createOnionPir"
     "-sDISABLE_EXCEPTION_CATCHING=0"
+    "-sDYNAMIC_EXECUTION=0"
+    "-sEMBIND_AOT=1"
     "-fexceptions"
 )
 
